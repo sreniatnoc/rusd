@@ -1,0 +1,251 @@
+syntax = "proto3";
+
+package etcdserverpb;
+
+message ResponseHeader {
+  // cluster_id is the ID of the cluster which sent the response.
+  uint64 cluster_id = 1;
+  // member_id is the ID of the member which sent the response.
+  uint64 member_id = 2;
+  // revision is the key-value store revision when the request was applied.
+  // For watch responses, the header.revision indicates the revision of the KV
+  // state at the time of the response. For range responses, the header.revision
+  // indicates the revision of the KV state at the time the range request was applied.
+  int64 revision = 3;
+  // raft_term is the raft term when the request was applied.
+  uint64 raft_term = 4;
+}
+
+message KeyValue {
+  // key is the key in bytes. An empty key is not allowed.
+  bytes key = 1;
+  // create_revision is the revision of last creation on this key.
+  int64 create_revision = 2;
+  // mod_revision is the revision of last modification on this key.
+  int64 mod_revision = 3;
+  // version is the version of the key. A deletion resets
+  // the version to zero and any modification of the key
+  // increases its version.
+  int64 version = 4;
+  // value is the value held by the key, in bytes.
+  bytes value = 5;
+  // lease is the ID of the lease that attached to key.
+  // When the attached lease expires, the key will be deleted.
+  // If lease is 0, then no lease is attached to the key.
+  int64 lease = 6;
+}
+
+message Event {
+  enum EventType {
+    PUT = 0;
+    DELETE = 1;
+  }
+  // type is the kind of event. If type is a PUT, it indicates
+  // new data has been stored to the key. If type is a DELETE,
+  // it indicates the key was deleted.
+  EventType type = 1;
+  // kv holds the KeyValue for the event.
+  // A PUT event contains current kv pair.
+  // A PUT event with kv.Version=1 indicates the creation of a key.
+  // A DELETE/EXPIRE event contains the deleted key with
+  // its modification revision set to the revision of deletion.
+  KeyValue kv = 2;
+  // prev_kv holds the previous KeyValue for the event.
+  // The PrevKv is the KV before the event happens.
+  KeyValue prev_kv = 3;
+}
+
+// RangeRequest requests a range of keys.
+message RangeRequest {
+  bytes key = 1;
+  // range_end is the upper bound on the requested range [key, range_end).
+  // If range_end is not given, the request only looks up key.
+  bytes range_end = 2;
+  // limit is a limit on the number of keys returned for the request.
+  // When limit is set to 0, it is treated as no limit.
+  int64 limit = 3;
+  // revision specifies the KV revision at which the Operation should be applied.
+  // If not specified, the operation is applied to the latest KV state.
+  // If the revision is compacted, ErrCompacted is returned.
+  int64 revision = 4;
+  // sort_order is the order for returned sorted results.
+  enum SortOrder {
+    NONE = 0;
+    ASCEND = 1;
+    DESCEND = 2;
+  }
+  SortOrder sort_order = 5;
+  // sort_target is the key-value field to sort by.
+  enum SortTarget {
+    KEY = 0;
+    VERSION = 1;
+    CREATE_REVISION = 2;
+    MOD_REVISION = 3;
+    VALUE = 4;
+  }
+  SortTarget sort_target = 6;
+  // serializable sets the range request to use serializable member-local reads.
+  // For best effort highest consistency gurantee, linearizable reads should be used.
+  // Serializable reads are best effort ordered reads and they may return stale data.
+  bool serializable = 7;
+  // keys_only when set returns only the keys and not the values.
+  bool keys_only = 8;
+  // count_only when set returns only the count of the keys in the range.
+  bool count_only = 9;
+  // min_mod_revision filters out keys with mod_revision less than the given revision.
+  int64 min_mod_revision = 10;
+  // max_mod_revision filters out keys with mod_revision greater than the given revision.
+  int64 max_mod_revision = 11;
+  // min_create_revision filters out keys with create_revision less than the given revision.
+  int64 min_create_revision = 12;
+  // max_create_revision filters out keys with create_revision greater than the given revision.
+  int64 max_create_revision = 13;
+}
+
+message RangeResponse {
+  ResponseHeader header = 1;
+  // kvs is the list of key-value pairs matched by the range request.
+  repeated KeyValue kvs = 2;
+  // more indicates if there are more keys to return in the requested range.
+  bool more = 3;
+  // count is the number of keys matched by the range request.
+  int64 count = 4;
+}
+
+// PutRequest places the given key into the key-value store.
+// Note: If prev_kv is accessed in txn.Then condition, can not modify value fields in puts.
+// It can only delete the prev_kv.
+message PutRequest {
+  bytes key = 1;
+  bytes value = 2;
+  // lease is the lease ID to associate with the key in the key-value store.
+  // A lease value of 0 indicates no lease.
+  int64 lease = 3;
+  // If prev_kv is set, gets the previous key-value pair before changing the value.
+  // The previous key-value pair will be returned in the put response.
+  bool prev_kv = 4;
+  // If ignore_value is set, update operates on the value as if previous value is not given.
+  // This flag is useful when want to pop metadata without caring about previous value.
+  // Note also that current put will return empty prev_kv (so the fields like version,
+  // mod_revision and create_revision will be the default value after a put).
+  bool ignore_value = 5;
+  // If ignore_lease is set, update operates on the lease as if previous lease is not given.
+  // This flag is useful when want to update only the key without caring about previous lease.
+  // Note also that current put will return empty prev_kv (so the fields like version,
+  // mod_revision and create_revision will be the default value after a put).
+  bool ignore_lease = 6;
+}
+
+message PutResponse {
+  ResponseHeader header = 1;
+  // if prev_kv is set in the request, the previous key-value pair will be returned.
+  KeyValue prev_kv = 2;
+}
+
+message DeleteRangeRequest {
+  bytes key = 1;
+  // range_end is the upper bound on the requested range [key, range_end).
+  // If range_end is not given, the request only looks up key.
+  bytes range_end = 2;
+  // If prev_kv is set, gets the previous key-value pairs before deleting them.
+  // The delete will delete all keys that exist within [key, range_end).
+  bool prev_kv = 3;
+}
+
+message DeleteRangeResponse {
+  ResponseHeader header = 1;
+  // deleted is the number of keys deleted by the delete range request.
+  int64 deleted = 2;
+  // if prev_kv is set in the request, the previous key-value pairs will be returned.
+  repeated KeyValue prev_kvs = 3;
+}
+
+message TxnRequest {
+  // compare is a list of predicates representing a conjunction of terms.
+  // If the comparisons match, then the success requests will be processed in order,
+  // and responses will contain their respective responses.
+  // If the comparisons do not match, then the failure requests will be processed in order,
+  // and responses will contain their respective responses.
+  repeated Compare compare = 1;
+  // success is a list of requests which will be processed if compare evaluates to true.
+  repeated RequestOp success = 2;
+  // failure is a list of requests which will be processed if compare evaluates to false.
+  repeated RequestOp failure = 3;
+}
+
+message Compare {
+  enum CompareResult {
+    EQUAL = 0;
+    GREATER = 1;
+    LESS = 2;
+    NOT_EQUAL = 3;
+  }
+  enum CompareTarget {
+    VERSION = 0;
+    CREATE_REVISION = 1;
+    MOD_REVISION = 2;
+    VALUE = 3;
+    LEASE = 4;
+  }
+  // result is logical comparison operator for this request.
+  CompareResult result = 1;
+  // target is the key-value field to compare
+  CompareTarget target = 2;
+  // key is the subject key for the comparison operation.
+  bytes key = 3;
+  oneof target_union {
+    // version is the version of the given key
+    int64 version = 4;
+    // create_revision is the creation revision of the given key
+    int64 create_revision = 5;
+    // mod_revision is the last modified revision of the given key.
+    int64 mod_revision = 6;
+    // value is the value of the given key
+    bytes value = 7;
+    // lease is the lease id of the given key.
+    int64 lease = 8;
+  }
+  // range_end compares the given range [key, range_end).
+  // See RangeRequest for more details on range_end.
+  bytes range_end = 9;
+}
+
+message RequestOp {
+  oneof request {
+    RangeRequest request_range = 1;
+    PutRequest request_put = 2;
+    DeleteRangeRequest request_delete_range = 3;
+    TxnRequest request_txn = 4;
+  }
+}
+
+message ResponseOp {
+  oneof response {
+    RangeResponse response_range = 1;
+    PutResponse response_put = 2;
+    DeleteRangeResponse response_delete_range = 3;
+    TxnResponse response_txn = 4;
+  }
+}
+
+message TxnResponse {
+  ResponseHeader header = 1;
+  // succeeded is set to true if the compare evaluated to true or false otherwise.
+  bool succeeded = 2;
+  // responses is a list of responses corresponding to the results from applying
+  // success if succeeded is true or failure if succeeded is false.
+  repeated ResponseOp responses = 3;
+}
+
+message CompactionRequest {
+  // revision is the key-value store revision for the compaction operation.
+  int64 revision = 1;
+  // physical is set so the RPC will wait until the compaction is physically
+  // applied to the local database such that compacted entries are totally
+  // removed from the backend database.
+  bool physical = 2;
+}
+
+message CompactionResponse {
+  ResponseHeader header = 1;
+}

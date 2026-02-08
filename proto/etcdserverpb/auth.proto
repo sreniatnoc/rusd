@@ -1,0 +1,40 @@
+syntax = "proto3";
+
+package etcdserverpb;
+
+message User {
+  // name is the username of the user.
+  bytes name = 1;
+  // password is the password of the user.
+  bytes password = 2;
+  // grant is the roles granted to the user.
+  repeated string grant = 3;
+  // revoke is the roles revoked from the user.
+  repeated string revoke = 4;
+}
+
+message Permission {
+  enum Type {
+    READ = 0;
+    WRITE = 1;
+    READWRITE = 2;
+  }
+  // permType is the type of the permission, READ, WRITE or READWRITE.
+  Type perm_type = 1;
+  // key is the first key for the permission range. If the range_end is not given,
+  // the permission applies only to the given key.
+  bytes key = 2;
+  // range_end determines the range of the keys for this permission. If the value
+  // is a prefix, for instance "foo", the permission applies to all keys prefixed with "foo".
+  // If both key and range_end are not given, it represents all.
+  bytes range_end = 3;
+}
+
+message Role {
+  // name is the role name.
+  bytes name = 1;
+  // kv is the permission of the role for the KV operations.
+  Permission kv = 2;
+  // rev is the current revision of the role. The role is obsolete when the revision in the request is less than the current revision.
+  int64 rev = 3;
+}

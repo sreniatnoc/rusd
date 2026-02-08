@@ -1,0 +1,113 @@
+version: '3.8'
+
+services:
+  rusd1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rusd1
+    environment:
+      RUST_LOG: info
+    command: >
+      --name rusd1
+      --data-dir /data
+      --listen-client-urls http://0.0.0.0:2379
+      --listen-peer-urls http://0.0.0.0:2380
+      --advertise-client-urls http://rusd1:2379
+      --initial-advertise-peer-urls http://rusd1:2380
+      --initial-cluster "rusd1=http://rusd1:2380,rusd2=http://rusd2:2380,rusd3=http://rusd3:2380"
+      --initial-cluster-state new
+      --initial-cluster-token rusd-test-cluster
+    ports:
+      - "2379:2379"
+      - "2380:2380"
+    volumes:
+      - rusd1-data:/data
+    networks:
+      - rusd-cluster
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:2379/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  rusd2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rusd2
+    environment:
+      RUST_LOG: info
+    command: >
+      --name rusd2
+      --data-dir /data
+      --listen-client-urls http://0.0.0.0:2379
+      --listen-peer-urls http://0.0.0.0:2380
+      --advertise-client-urls http://rusd2:2379
+      --initial-advertise-peer-urls http://rusd2:2380
+      --initial-cluster "rusd1=http://rusd1:2380,rusd2=http://rusd2:2380,rusd3=http://rusd3:2380"
+      --initial-cluster-state new
+      --initial-cluster-token rusd-test-cluster
+    ports:
+      - "2381:2379"
+      - "2381:2380"
+    volumes:
+      - rusd2-data:/data
+    networks:
+      - rusd-cluster
+    depends_on:
+      rusd1:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:2379/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  rusd3:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rusd3
+    environment:
+      RUST_LOG: info
+    command: >
+      --name rusd3
+      --data-dir /data
+      --listen-client-urls http://0.0.0.0:2379
+      --listen-peer-urls http://0.0.0.0:2380
+      --advertise-client-urls http://rusd3:2379
+      --initial-advertise-peer-urls http://rusd3:2380
+      --initial-cluster "rusd1=http://rusd1:2380,rusd2=http://rusd2:2380,rusd3=http://rusd3:2380"
+      --initial-cluster-state new
+      --initial-cluster-token rusd-test-cluster
+    ports:
+      - "2382:2379"
+      - "2382:2380"
+    volumes:
+      - rusd3-data:/data
+    networks:
+      - rusd-cluster
+    depends_on:
+      rusd2:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:2379/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  rusd1-data:
+    driver: local
+  rusd2-data:
+    driver: local
+  rusd3-data:
+    driver: local
+
+networks:
+  rusd-cluster:
+    driver: bridge
