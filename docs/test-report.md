@@ -141,6 +141,49 @@ Integration tests are broken because they:
 
 ---
 
+## K8s Black-Box Compliance Tests: 34/34 PASS
+
+Comprehensive compliance test suite run against the live Kind cluster with rusd:
+
+| Category | Test | Status |
+|----------|------|--------|
+| Core | Create Namespace | PASS |
+| Core | Namespace is Active | PASS |
+| Core | Create ConfigMap | PASS |
+| Core | Read ConfigMap data | PASS |
+| Core | Patch ConfigMap | PASS |
+| Core | Delete ConfigMap | PASS |
+| Core | Create Secret | PASS |
+| Core | Read Secret data (base64) | PASS |
+| Core | Delete Secret | PASS |
+| Core | Create ServiceAccount | PASS |
+| RBAC | Create Role | PASS |
+| RBAC | Create RoleBinding | PASS |
+| RBAC | Create ClusterRole | PASS |
+| RBAC | Create ClusterRoleBinding | PASS |
+| Workloads | Create Deployment | PASS |
+| Workloads | Deployment pod ready (1/1) | PASS |
+| Workloads | Scale Deployment to 2 | PASS |
+| Workloads | Scaled pods ready (2/2) | PASS |
+| Workloads | Set image for rolling update | PASS |
+| Workloads | Rolling update completed | PASS |
+| Workloads | Create DaemonSet | PASS |
+| Workloads | DaemonSet pod ready | PASS |
+| Workloads | Create Job | PASS |
+| Workloads | Job completed | PASS |
+| Networking | Create ClusterIP Service | PASS |
+| Networking | Service has ClusterIP | PASS |
+| Networking | Create NodePort Service | PASS |
+| Storage | Create PVC | PASS |
+| Pod | Create Pod with env vars | PASS |
+| Pod | Pod env var accessible | PASS |
+| Pod | Pod exec works | PASS |
+| Pod | Pod logs accessible | PASS |
+| Versioning | ResourceVersion changes on update | PASS |
+| Cleanup | Delete namespace (cascade) | PASS |
+
+---
+
 ## Performance Observations
 
 - rusd startup: ~30ms (vs etcd ~500ms)
