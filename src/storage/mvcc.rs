@@ -174,7 +174,7 @@ impl MvccStore {
 
         // Initialize key index from sled by scanning all existing data
         let mut index = KeyIndex::new();
-        let mut current_revision = 0i64;
+        let mut current_revision = 1i64;
         let mut compact_revision = 0i64;
 
         // Scan all existing keys and rebuild the index
@@ -209,14 +209,14 @@ impl MvccStore {
 
     /// Increments and returns the next revision.
     fn next_revision(&self) -> i64 {
-        self.current_revision.fetch_add(1, Ordering::SeqCst)
+        self.current_revision.fetch_add(1, Ordering::SeqCst) + 1
     }
 
-    /// Stores a single key-value pair, returning the revision and encoded KeyValue.
-    pub fn put(&self, key: &[u8], value: &[u8], lease: i64) -> StorageResult<(i64, KeyValue)> {
+    /// Stores a single key-value pair, returning (revision, new_kv, prev_kv).
+    pub fn put(&self, key: &[u8], value: &[u8], lease: i64) -> StorageResult<(i64, KeyValue, Option<KeyValue>)> {
         // Get the current revision of this key (if any)
         let index = self.key_index.read();
-        let current_version = index
+        let _current_version = index
             .get(key, self.current_revision())
             .map(|r| r.main)
             .unwrap_or(0);
@@ -225,18 +225,17 @@ impl MvccStore {
         // Allocate new revision
         let new_revision = self.next_revision();
 
-        // Get current key version
+        // Get current key version and previous KV
         let current_kv = self
             .backend
             .get("kv", key)
             .map_err(|_| StorageError::Mvcc("Backend error".to_string()))?;
 
-        let version = if let Some(ref kv_data) = current_kv {
-            let kv = KeyValue::decode(key.to_vec(), kv_data)?;
-            kv.version + 1
-        } else {
-            1
-        };
+        let prev_kv = current_kv
+            .as_ref()
+            .and_then(|data| KeyValue::decode(key.to_vec(), data).ok());
+
+        let version = prev_kv.as_ref().map(|kv| kv.version + 1).unwrap_or(1);
 
         // Create the new KeyValue
         let kv = KeyValue {
@@ -244,11 +243,7 @@ impl MvccStore {
             create_revision: if version == 1 {
                 new_revision
             } else {
-                current_kv
-                    .as_ref()
-                    .and_then(|data| KeyValue::decode(key.to_vec(), data).ok())
-                    .map(|kv| kv.create_revision)
-                    .unwrap_or(new_revision)
+                prev_kv.as_ref().map(|kv| kv.create_revision).unwrap_or(new_revision)
             },
             mod_revision: new_revision,
             version,
@@ -269,7 +264,7 @@ impl MvccStore {
 
         debug!("Put key {:?} at revision {}", String::from_utf8_lossy(key), new_revision);
 
-        Ok((new_revision, kv))
+        Ok((new_revision, kv, prev_kv))
     }
 
     /// Deletes a range of keys, returning the revision and deleted KeyValues.
@@ -487,9 +482,10 @@ mod tests {
     fn test_put_and_range() {
         let store = setup_store();
 
-        let (rev1, kv1) = store.put(b"key1", b"value1", 0).unwrap();
+        let (rev1, kv1, prev1) = store.put(b"key1", b"value1", 0).unwrap();
         assert_eq!(kv1.version, 1);
         assert_eq!(kv1.mod_revision, rev1);
+        assert!(prev1.is_none()); // No previous value for new key
 
         let result = store.range(b"key1", b"key2", 0, 10, false).unwrap();
         assert_eq!(result.kvs.len(), 1);
@@ -500,13 +496,16 @@ mod tests {
     fn test_put_update() {
         let store = setup_store();
 
-        let (rev1, kv1) = store.put(b"key1", b"value1", 0).unwrap();
-        let (rev2, kv2) = store.put(b"key1", b"value2", 0).unwrap();
+        let (rev1, kv1, prev1) = store.put(b"key1", b"value1", 0).unwrap();
+        let (rev2, kv2, prev2) = store.put(b"key1", b"value2", 0).unwrap();
 
         assert_eq!(kv1.version, 1);
         assert_eq!(kv2.version, 2);
         assert_eq!(kv1.create_revision, kv2.create_revision); // Same creation revision
         assert!(rev2 > rev1);
+        assert!(prev1.is_none());
+        assert!(prev2.is_some());
+        assert_eq!(prev2.unwrap().value, b"value1"); // Previous value returned
 
         let result = store.range(b"key1", b"key2", 0, 10, false).unwrap();
         assert_eq!(result.kvs[0].value, b"value2");

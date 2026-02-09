@@ -158,32 +158,16 @@ async fn main() -> anyhow::Result<()> {
     // Set up signal handlers for graceful shutdown
     let shutdown = setup_signal_handlers();
 
-    // Run the server in a spawned task so we can wait for shutdown signal
-    let server_task = tokio::spawn(async move {
-        if let Err(e) = server.run().await {
-            eprintln!("Server error: {}", e);
-            std::process::exit(1);
-        }
-    });
-
-    // Wait for shutdown signal
-    shutdown.await;
-
-    info!("Received shutdown signal, waiting for server to gracefully shutdown...");
-
-    // Give server 5 seconds to shutdown gracefully
-    match tokio::time::timeout(std::time::Duration::from_secs(5), server_task).await {
-        Ok(Ok(())) => {
+    // Run the server with the shutdown signal
+    info!("Starting rusd server...");
+    match server.run(shutdown).await {
+        Ok(()) => {
             info!("Server shut down gracefully");
             Ok(())
         }
-        Ok(Err(e)) => {
-            error!("Server task panicked: {}", e);
-            Err(anyhow::anyhow!("Server task panicked: {}", e))
-        }
-        Err(_) => {
-            error!("Server did not shut down within 5 seconds, forcing shutdown");
-            std::process::exit(1);
+        Err(e) => {
+            error!("Server error: {:?}", e);
+            Err(e)
         }
     }
 }

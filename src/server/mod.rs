@@ -326,9 +326,8 @@ impl RusdServer {
 
     /// Run the server, starting the gRPC server and all background tasks.
     ///
-    /// This method will block indefinitely until an error occurs or the server is
-    /// shut down via a signal (SIGTERM/SIGINT).
-    pub async fn run(mut self) -> anyhow::Result<()> {
+    /// This method will block until the shutdown signal is received or an error occurs.
+    pub async fn run(mut self, shutdown: impl std::future::Future<Output = ()>) -> anyhow::Result<()> {
         // TODO: Fix Send trait issue with parking_lot::Mutex for raft event loop
         // Start Raft node's event loop
         // let raft_clone = self.raft.clone();
@@ -349,8 +348,8 @@ impl RusdServer {
         info!(addr = %addr, "Starting gRPC server");
 
         // Create service instances matching their actual constructors
-        let kv_service = KvService::new(self.store.clone(), self.raft.clone());
-        let watch_service = WatchService::new(self.store.clone(), self.raft.clone());
+        let kv_service = KvService::new(self.store.clone(), self.raft.clone(), self.watch_hub.clone());
+        let watch_service = WatchService::new(self.store.clone(), self.raft.clone(), self.watch_hub.clone());
 
         // LeaseService needs the ApiLeaseManager bridge (raft + core lease manager)
         let api_lease_mgr = Arc::new(crate::api::lease_service::ApiLeaseManager::new(
@@ -372,15 +371,19 @@ impl RusdServer {
         ));
         let auth_service = AuthService::new(auth_mgr_for_service);
 
-        // Build gRPC server with all services
+        // Build gRPC server with all services and HTTP/2 settings for K8s compat
         let server = Server::builder()
+            .http2_keepalive_interval(Some(Duration::from_secs(10)))
+            .http2_keepalive_timeout(Some(Duration::from_secs(20)))
+            .initial_connection_window_size(Some(1024 * 1024))  // 1MB
+            .initial_stream_window_size(Some(1024 * 1024))      // 1MB
             .add_service(KvServer::new(kv_service))
             .add_service(WatchServer::new(watch_service))
             .add_service(LeaseServer::new(lease_service))
             .add_service(ClusterServer::new(cluster_service))
             .add_service(MaintenanceServer::new(maintenance_service))
             .add_service(AuthServer::new(auth_service))
-            .serve(addr);
+            .serve_with_shutdown(addr, shutdown);
 
         info!("rusd server listening on {}", addr);
         info!("Data directory: {}", self.config.data_dir.display());
@@ -390,7 +393,7 @@ impl RusdServer {
             self.config.advertise_client_urls.join(", ")
         );
 
-        // Run server until error or shutdown signal
+        // Run server until shutdown signal or error
         server.await?;
 
         info!("rusd server shutting down");

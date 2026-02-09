@@ -6,15 +6,17 @@ use crate::etcdserverpb::kv_server::Kv;
 use crate::etcdserverpb::response_op;
 use crate::storage::mvcc::MvccStore;
 use crate::raft::node::RaftNode;
+use crate::watch::WatchHub;
 
 pub struct KvService {
     store: Arc<MvccStore>,
     raft: Arc<RaftNode>,
+    watch_hub: Arc<WatchHub>,
 }
 
 impl KvService {
-    pub fn new(store: Arc<MvccStore>, raft: Arc<RaftNode>) -> Self {
-        Self { store, raft }
+    pub fn new(store: Arc<MvccStore>, raft: Arc<RaftNode>, watch_hub: Arc<WatchHub>) -> Self {
+        Self { store, raft, watch_hub }
     }
 
     fn build_response_header(&self) -> ResponseHeader {
@@ -34,6 +36,79 @@ impl KvService {
             version: kv.version,
             value: kv.value,
             lease: kv.lease,
+        }
+    }
+
+    fn to_watch_kv(kv: &crate::storage::mvcc::KeyValue) -> crate::watch::KeyValue {
+        crate::watch::KeyValue {
+            key: kv.key.clone(),
+            create_revision: kv.create_revision,
+            mod_revision: kv.mod_revision,
+            version: kv.version,
+            value: kv.value.clone(),
+            lease: kv.lease,
+        }
+    }
+
+    /// Evaluates a single Compare operation for txn.
+    fn evaluate_compare(&self, cmp: &Compare, current_revision: i64) -> bool {
+        use crate::etcdserverpb::compare::{CompareResult, CompareTarget, TargetUnion};
+
+        // Look up the key
+        let mut range_end = cmp.key.clone();
+        range_end.push(0);
+        let kv = match self.store.range(&cmp.key, &range_end, current_revision, 1, false) {
+            Ok(result) => result.kvs.into_iter().next(),
+            Err(_) => None,
+        };
+
+        let result = CompareResult::try_from(cmp.result).unwrap_or(CompareResult::Equal);
+
+        match &cmp.target_union {
+            Some(TargetUnion::Version(target_version)) => {
+                let actual = kv.as_ref().map(|kv| kv.version).unwrap_or(0);
+                Self::compare_i64(actual, *target_version, result)
+            }
+            Some(TargetUnion::CreateRevision(target_rev)) => {
+                let actual = kv.as_ref().map(|kv| kv.create_revision).unwrap_or(0);
+                Self::compare_i64(actual, *target_rev, result)
+            }
+            Some(TargetUnion::ModRevision(target_rev)) => {
+                let actual = kv.as_ref().map(|kv| kv.mod_revision).unwrap_or(0);
+                Self::compare_i64(actual, *target_rev, result)
+            }
+            Some(TargetUnion::Value(target_value)) => {
+                let actual = kv.as_ref().map(|kv| kv.value.as_slice()).unwrap_or(&[]);
+                Self::compare_bytes(actual, target_value, result)
+            }
+            Some(TargetUnion::Lease(target_lease)) => {
+                let actual = kv.as_ref().map(|kv| kv.lease).unwrap_or(0);
+                Self::compare_i64(actual, *target_lease, result)
+            }
+            None => {
+                // No target union - comparison is vacuously true
+                true
+            }
+        }
+    }
+
+    fn compare_i64(actual: i64, target: i64, result: crate::etcdserverpb::compare::CompareResult) -> bool {
+        use crate::etcdserverpb::compare::CompareResult;
+        match result {
+            CompareResult::Equal => actual == target,
+            CompareResult::Greater => actual > target,
+            CompareResult::Less => actual < target,
+            CompareResult::NotEqual => actual != target,
+        }
+    }
+
+    fn compare_bytes(actual: &[u8], target: &[u8], result: crate::etcdserverpb::compare::CompareResult) -> bool {
+        use crate::etcdserverpb::compare::CompareResult;
+        match result {
+            CompareResult::Equal => actual == target,
+            CompareResult::Greater => actual > target,
+            CompareResult::Less => actual < target,
+            CompareResult::NotEqual => actual != target,
         }
     }
 }
@@ -163,19 +238,6 @@ impl Kv for KvService {
             ));
         }
 
-        // Get previous value if requested
-        let prev_kv = if req.prev_kv {
-            // For single-key lookup, append a null byte to create an exclusive upper bound
-            let mut range_end = req.key.clone();
-            range_end.push(0);
-            match self.store.range(&req.key, &range_end, self.store.current_revision(), 1, false) {
-                Ok(result) => result.kvs.into_iter().next().map(Self::convert_kv),
-                Err(_) => None,
-            }
-        } else {
-            None
-        };
-
         // Propose to Raft
         // TODO: Use proper proto encoding for proposals instead of bincode
         let proposal_data = format!("PUT:{}:{}",
@@ -188,11 +250,27 @@ impl Kv for KvService {
             .map_err(|e| Status::new(Code::Internal, format!("raft proposal failed: {}", e)))?;
 
         // Apply the put operation to the store
-        let (_new_revision, _kv) = self.store.put(
+        let (new_revision, kv, old_kv) = self.store.put(
             &req.key,
             &req.value,
             req.lease,
         ).map_err(|e| Status::new(Code::Internal, format!("put failed: {}", e)))?;
+
+        // Notify watchers of the put event (include prev_kv for K8s compatibility)
+        let watch_prev = old_kv.as_ref().map(|k| Self::to_watch_kv(k));
+        let put_event = crate::watch::Event {
+            event_type: crate::watch::EventType::Put,
+            kv: Self::to_watch_kv(&kv),
+            prev_kv: watch_prev,
+        };
+        let _ = self.watch_hub.notify(vec![put_event], new_revision, 0);
+
+        // Use prev_kv from the store if client requested it
+        let prev_kv = if req.prev_kv {
+            old_kv.map(Self::convert_kv)
+        } else {
+            None
+        };
 
         let response = PutResponse {
             header: Some(self.build_response_header()),
@@ -270,10 +348,22 @@ impl Kv for KvService {
         } else {
             req.range_end.clone()
         };
-        let (_, deleted_kvs) = self.store.delete_range(
+        let (del_revision, deleted_kvs) = self.store.delete_range(
             &req.key,
             &effective_range_end,
         ).map_err(|e| Status::new(Code::Internal, format!("delete failed: {}", e)))?;
+
+        // Notify watchers of delete events (include prev_kv for K8s)
+        if !deleted_kvs.is_empty() {
+            let delete_events: Vec<crate::watch::Event> = deleted_kvs.iter().map(|kv| {
+                crate::watch::Event {
+                    event_type: crate::watch::EventType::Delete,
+                    kv: Self::to_watch_kv(kv),
+                    prev_kv: Some(Self::to_watch_kv(kv)),
+                }
+            }).collect();
+            let _ = self.watch_hub.notify(delete_events, del_revision, 0);
+        }
 
         let response = DeleteRangeResponse {
             header: Some(self.build_response_header()),
@@ -300,9 +390,10 @@ impl Kv for KvService {
 
         let current_revision = self.store.current_revision();
 
-        // TODO: Evaluate all compare operations with proper target_union handling
-        // For now, all comparisons succeed to allow txn to work
-        let all_succeed = true;
+        // Evaluate all compare operations
+        let all_succeed = req.compare.iter().all(|cmp| {
+            self.evaluate_compare(cmp, current_revision)
+        });
 
         // Select success or failure operations
         let ops = if all_succeed {
@@ -351,21 +442,24 @@ impl Kv for KvService {
                         }
                     }
                     request_op::Request::RequestPut(put_req) => {
-                        // Execute put operation
+                        // Execute put operation (returns prev_kv from store)
+                        let (txn_put_rev, txn_put_kv, txn_old_kv) = self.store.put(&put_req.key, &put_req.value, put_req.lease)
+                            .map_err(|e| Status::new(Code::Internal, format!("put in txn failed: {}", e)))?;
+
+                        // Notify watchers (include prev_kv for K8s)
+                        let watch_prev = txn_old_kv.as_ref().map(|k| Self::to_watch_kv(k));
+                        let put_event = crate::watch::Event {
+                            event_type: crate::watch::EventType::Put,
+                            kv: Self::to_watch_kv(&txn_put_kv),
+                            prev_kv: watch_prev,
+                        };
+                        let _ = self.watch_hub.notify(vec![put_event], txn_put_rev, 0);
+
                         let prev_kv = if put_req.prev_kv {
-                            // For single-key lookup, append a null byte to create an exclusive upper bound
-                            let mut range_end = put_req.key.clone();
-                            range_end.push(0);
-                            match self.store.range(&put_req.key, &range_end, current_revision, 1, false) {
-                                Ok(result) => result.kvs.into_iter().next().map(Self::convert_kv),
-                                Err(_) => None,
-                            }
+                            txn_old_kv.map(Self::convert_kv)
                         } else {
                             None
                         };
-
-                        self.store.put(&put_req.key, &put_req.value, put_req.lease)
-                            .map_err(|e| Status::new(Code::Internal, format!("put in txn failed: {}", e)))?;
 
                         ResponseOp {
                             response: Some(response_op::Response::ResponsePut(PutResponse {
@@ -404,10 +498,22 @@ impl Kv for KvService {
                             vec![]
                         };
 
-                        let (_, deleted_kvs) = self.store.delete_range(
+                        let (txn_del_rev, deleted_kvs) = self.store.delete_range(
                             &del_req.key,
                             &effective_range_end,
                         ).map_err(|e| Status::new(Code::Internal, format!("delete in txn failed: {}", e)))?;
+
+                        // Notify watchers (include prev_kv for K8s)
+                        if !deleted_kvs.is_empty() {
+                            let delete_events: Vec<crate::watch::Event> = deleted_kvs.iter().map(|kv| {
+                                crate::watch::Event {
+                                    event_type: crate::watch::EventType::Delete,
+                                    kv: Self::to_watch_kv(kv),
+                                    prev_kv: Some(Self::to_watch_kv(kv)),
+                                }
+                            }).collect();
+                            let _ = self.watch_hub.notify(delete_events, txn_del_rev, 0);
+                        }
 
                         ResponseOp {
                             response: Some(response_op::Response::ResponseDeleteRange(

@@ -2,65 +2,23 @@ use tonic::{Request, Response, Status, Code};
 use std::sync::Arc;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio::sync::mpsc;
+use tracing::{debug, warn};
 
 use crate::etcdserverpb::*;
 use crate::etcdserverpb::watch_server::Watch;
 use crate::storage::mvcc::MvccStore;
 use crate::raft::node::RaftNode;
+use crate::watch::{WatchHub, WatchFilter};
 
 pub struct WatchService {
     store: Arc<MvccStore>,
     raft: Arc<RaftNode>,
+    watch_hub: Arc<WatchHub>,
 }
 
 impl WatchService {
-    pub fn new(store: Arc<MvccStore>, raft: Arc<RaftNode>) -> Self {
-        Self { store, raft }
-    }
-
-    fn build_response_header(&self) -> ResponseHeader {
-        ResponseHeader {
-            cluster_id: self.raft.cluster_id(),
-            member_id: self.raft.member_id(),
-            revision: self.store.current_revision(),
-            raft_term: self.raft.current_term(),
-        }
-    }
-
-    async fn handle_watch_request(
-        &self,
-        watch_id: i64,
-        req: WatchCreateRequest,
-        tx: mpsc::Sender<Result<WatchResponse, Status>>,
-    ) -> Result<(), Status> {
-        // Send watch created response
-        let response = WatchResponse {
-            header: Some(self.build_response_header()),
-            watch_id,
-            created: true,
-            canceled: false,
-            cancel_reason: String::new(),
-            events: vec![],
-            compact_revision: 0,
-            fragment: false,
-            progress_notify: false,
-        };
-
-        tx.send(Ok(response))
-            .await
-            .map_err(|e| Status::new(Code::Internal, format!("failed to send response: {}", e)))?;
-
-        // Determine the revision to start watching from
-        let start_revision = if req.start_revision > 0 {
-            req.start_revision
-        } else {
-            self.store.current_revision() + 1
-        };
-
-        // TODO: Implement proper watch mechanism
-        // For now, just return empty watch response
-        tokio::time::sleep(tokio::time::Duration::from_secs(3600)).await;
-        Ok(())
+    pub fn new(store: Arc<MvccStore>, raft: Arc<RaftNode>, watch_hub: Arc<WatchHub>) -> Self {
+        Self { store, raft, watch_hub }
     }
 }
 
@@ -77,10 +35,11 @@ impl Watch for WatchService {
 
         let store = self.store.clone();
         let raft = self.raft.clone();
+        let watch_hub = self.watch_hub.clone();
 
         tokio::spawn(async move {
-            let mut next_watch_id: i64 = 1;
-            let mut active_watches = std::collections::HashMap::new();
+            let mut active_watches: std::collections::HashMap<i64, tokio::task::JoinHandle<()>> =
+                std::collections::HashMap::new();
 
             loop {
                 match stream.message().await {
@@ -88,9 +47,6 @@ impl Watch for WatchService {
                         if let Some(request_union) = watch_req.request_union {
                             match request_union {
                                 watch_request::RequestUnion::CreateRequest(create_req) => {
-                                    let watch_id = next_watch_id;
-                                    next_watch_id += 1;
-
                                     // Validate key
                                     if create_req.key.is_empty() {
                                         let _ = tx.send(Err(Status::new(
@@ -100,16 +56,57 @@ impl Watch for WatchService {
                                         continue;
                                     }
 
-                                    // Send watch created response
-                                    let response_header = ResponseHeader {
-                                        cluster_id: raft.cluster_id(),
-                                        member_id: raft.member_id(),
-                                        revision: store.current_revision(),
-                                        raft_term: raft.current_term(),
+                                    // Parse filters from proto i32 to WatchFilter
+                                    let filters: Vec<WatchFilter> = create_req.filters
+                                        .iter()
+                                        .filter_map(|f| match *f {
+                                            0 => Some(WatchFilter::NoPut),
+                                            1 => Some(WatchFilter::NoDelete),
+                                            _ => None,
+                                        })
+                                        .collect();
+
+                                    let start_revision = if create_req.start_revision > 0 {
+                                        create_req.start_revision
+                                    } else {
+                                        store.current_revision() + 1
                                     };
 
+                                    // Create mpsc channel for this watch's events from WatchHub
+                                    let (watch_tx, mut watch_rx) = mpsc::channel(256);
+
+                                    // Register watch with WatchHub
+                                    let watch_id = match watch_hub.create_watch(
+                                        create_req.key.clone(),
+                                        create_req.range_end.clone(),
+                                        start_revision,
+                                        filters,
+                                        create_req.prev_kv,
+                                        create_req.progress_notify,
+                                        create_req.fragment,
+                                        watch_tx,
+                                    ) {
+                                        Ok(id) => id,
+                                        Err(e) => {
+                                            warn!(error = %e, "Failed to create watch");
+                                            let _ = tx.send(Err(Status::new(
+                                                Code::Internal,
+                                                format!("failed to create watch: {}", e),
+                                            ))).await;
+                                            continue;
+                                        }
+                                    };
+
+                                    debug!(watch_id, "Watch registered with WatchHub");
+
+                                    // Send watch created acknowledgment
                                     let response = WatchResponse {
-                                        header: Some(response_header),
+                                        header: Some(ResponseHeader {
+                                            cluster_id: raft.cluster_id(),
+                                            member_id: raft.member_id(),
+                                            revision: store.current_revision(),
+                                            raft_term: raft.current_term(),
+                                        }),
                                         watch_id,
                                         created: true,
                                         canceled: false,
@@ -117,53 +114,113 @@ impl Watch for WatchService {
                                         events: vec![],
                                         compact_revision: 0,
                                         fragment: false,
-                                        progress_notify: false,
                                     };
 
                                     if tx.send(Ok(response)).await.is_err() {
                                         break;
                                     }
 
-                                    // Store watch info
-                                    active_watches.insert(watch_id, create_req);
+                                    // Spawn task to forward WatchHub events to gRPC stream
+                                    let tx_clone = tx.clone();
+                                    let raft_clone = raft.clone();
+                                    let store_clone = store.clone();
+                                    let forward_handle = tokio::spawn(async move {
+                                        while let Some(watch_event) = watch_rx.recv().await {
+                                            // Convert internal watch::Event -> proto Event
+                                            let events: Vec<Event> = watch_event.events
+                                                .into_iter()
+                                                .map(|e| {
+                                                    let event_type = match e.event_type {
+                                                        crate::watch::EventType::Put => 0,
+                                                        crate::watch::EventType::Delete => 1,
+                                                    };
+                                                    Event {
+                                                        r#type: event_type,
+                                                        kv: Some(KeyValue {
+                                                            key: e.kv.key,
+                                                            create_revision: e.kv.create_revision,
+                                                            mod_revision: e.kv.mod_revision,
+                                                            version: e.kv.version,
+                                                            value: e.kv.value,
+                                                            lease: e.kv.lease,
+                                                        }),
+                                                        prev_kv: e.prev_kv.map(|pk| KeyValue {
+                                                            key: pk.key,
+                                                            create_revision: pk.create_revision,
+                                                            mod_revision: pk.mod_revision,
+                                                            version: pk.version,
+                                                            value: pk.value,
+                                                            lease: pk.lease,
+                                                        }),
+                                                    }
+                                                })
+                                                .collect();
 
-                                    // In a real implementation, we would spawn a task to handle this watch
-                                    // For now, we just acknowledge it
+                                            let is_progress = events.is_empty();
+
+                                            let response = WatchResponse {
+                                                header: Some(ResponseHeader {
+                                                    cluster_id: raft_clone.cluster_id(),
+                                                    member_id: raft_clone.member_id(),
+                                                    revision: store_clone.current_revision(),
+                                                    raft_term: raft_clone.current_term(),
+                                                }),
+                                                watch_id: watch_event.watch_id,
+                                                created: false,
+                                                canceled: false,
+                                                cancel_reason: String::new(),
+                                                events,
+                                                compact_revision: watch_event.compact_revision,
+                                                fragment: false,
+                                            };
+
+                                            if tx_clone.send(Ok(response)).await.is_err() {
+                                                break;
+                                            }
+                                        }
+                                    });
+
+                                    active_watches.insert(watch_id, forward_handle);
                                 }
                                 watch_request::RequestUnion::CancelRequest(cancel_req) => {
-                                    active_watches.remove(&cancel_req.watch_id);
+                                    let watch_id = cancel_req.watch_id;
 
-                                    let response_header = ResponseHeader {
-                                        cluster_id: raft.cluster_id(),
-                                        member_id: raft.member_id(),
-                                        revision: store.current_revision(),
-                                        raft_term: raft.current_term(),
-                                    };
+                                    // Cancel in WatchHub
+                                    let _ = watch_hub.cancel_watch(watch_id);
+
+                                    // Abort the forwarding task
+                                    if let Some(handle) = active_watches.remove(&watch_id) {
+                                        handle.abort();
+                                    }
+
+                                    debug!(watch_id, "Watch canceled");
 
                                     let response = WatchResponse {
-                                        header: Some(response_header),
-                                        watch_id: cancel_req.watch_id,
+                                        header: Some(ResponseHeader {
+                                            cluster_id: raft.cluster_id(),
+                                            member_id: raft.member_id(),
+                                            revision: store.current_revision(),
+                                            raft_term: raft.current_term(),
+                                        }),
+                                        watch_id,
                                         created: false,
                                         canceled: true,
                                         cancel_reason: String::new(),
                                         events: vec![],
                                         compact_revision: 0,
                                         fragment: false,
-                                        progress_notify: false,
                                     };
 
                                     let _ = tx.send(Ok(response)).await;
                                 }
                                 watch_request::RequestUnion::ProgressRequest(_) => {
-                                    let response_header = ResponseHeader {
-                                        cluster_id: raft.cluster_id(),
-                                        member_id: raft.member_id(),
-                                        revision: store.current_revision(),
-                                        raft_term: raft.current_term(),
-                                    };
-
                                     let response = WatchResponse {
-                                        header: Some(response_header),
+                                        header: Some(ResponseHeader {
+                                            cluster_id: raft.cluster_id(),
+                                            member_id: raft.member_id(),
+                                            revision: store.current_revision(),
+                                            raft_term: raft.current_term(),
+                                        }),
                                         watch_id: 0,
                                         created: false,
                                         canceled: false,
@@ -171,7 +228,6 @@ impl Watch for WatchService {
                                         events: vec![],
                                         compact_revision: 0,
                                         fragment: false,
-                                        progress_notify: false,
                                     };
 
                                     let _ = tx.send(Ok(response)).await;
@@ -180,7 +236,11 @@ impl Watch for WatchService {
                         }
                     }
                     Ok(None) => {
-                        // Client closed the stream
+                        // Client closed the stream - cancel all active watches
+                        for (watch_id, handle) in active_watches.drain() {
+                            let _ = watch_hub.cancel_watch(watch_id);
+                            handle.abort();
+                        }
                         break;
                     }
                     Err(e) => {
@@ -188,6 +248,11 @@ impl Watch for WatchService {
                             Code::Internal,
                             format!("stream error: {}", e),
                         ))).await;
+                        // Cancel all watches on error
+                        for (watch_id, handle) in active_watches.drain() {
+                            let _ = watch_hub.cancel_watch(watch_id);
+                            handle.abort();
+                        }
                         break;
                     }
                 }

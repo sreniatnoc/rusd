@@ -1,5 +1,5 @@
 # Stage 1: Build
-FROM rust:1.75-slim as builder
+FROM rust:1.85-slim AS builder
 
 RUN apt-get update && apt-get install -y \
     protobuf-compiler \
@@ -10,7 +10,11 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 COPY Cargo.toml Cargo.lock* ./
+COPY build.rs ./
+COPY proto proto/
 COPY src src/
+COPY benches benches/
+COPY tests tests/
 
 # Cache dependencies
 RUN mkdir -p .cargo && \

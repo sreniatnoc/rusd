@@ -61,12 +61,14 @@ message WatchCreateRequest {
     NODELETE = 1;
   }
   repeated FilterType filters = 5;
+  // prev_kv when set will return the previous key-value pair before the event happens.
+  bool prev_kv = 6;
   // If the caller specifies watch_id, it will be used as the ID
   // for this watcher. If the id is already taken by another watcher, watch creation will fail by returning ALREADY_EXIST.
   // If the caller does not specify a watch_id, the internal arbitrary id will be used instead.
-  int64 watch_id = 6;
+  int64 watch_id = 7;
   // fragment enables splitting large revisions into multiple watch responses.
-  bool fragment = 7;
+  bool fragment = 8;
 }
 
 message WatchCancelRequest {
@@ -96,14 +98,11 @@ message WatchResponse {
   int64 compact_revision = 5;
   // cancel_reason indicates the reason for cancellation.
   string cancel_reason = 6;
+  // fragment indicates that event in this response is a fragment of a separate event.
+  bool fragment = 7;
   // events contains all events for this watcher.
-  repeated Event events = 7;
-  // If the watch response has the progress_notify set as true,
-  // it indicates that now server detected a new revision on this stream.
-  // Clients of this streaming RPC may choose to query the progress separately.
-  bool progress_notify = 8;
-  // fragment indicates that event in this response is a fragment of a sepearte event.
-  bool fragment = 9;
+  // Field number 11 matches etcd's proto for wire compatibility.
+  repeated Event events = 11;
 }
 
 // Lease service provides lease operations for the etcd key-value store.
