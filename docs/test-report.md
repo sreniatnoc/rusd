@@ -29,14 +29,24 @@ All library-level unit tests pass:
 | auth | 2 | PASS |
 | cluster | 2 | PASS |
 
-## Integration Tests: 12/12 FAIL (Pre-existing)
+## Integration Tests: 11/12 PASS (1 ignored)
 
-Integration tests are broken because they:
-1. Use HTTP health checks (`reqwest`) against a gRPC-only server
-2. All use the same fixed port (12379), causing "Address already in use" on parallel execution
-3. Need rewriting to use tonic gRPC clients
+Rewritten to use in-process gRPC (tonic) clients with random port allocation.
 
-**Action needed:** Rewrite integration tests with tonic client and random port allocation.
+| Test | Status | Description |
+|------|--------|-------------|
+| test_put_and_get | PASS | Put key, retrieve via Range, verify bytes |
+| test_delete_range | PASS | Put 3 keys, DeleteRange by prefix, verify empty |
+| test_transaction | PASS | Txn with value-compare, verify success path |
+| test_watch | PASS | Bidirectional streaming: create watch, put key, receive event |
+| test_lease_lifecycle | PASS | LeaseGrant, Put with lease, LeaseRevoke |
+| test_compaction | PASS | Put 5 revisions, Compact |
+| test_snapshot_restore | IGNORED | Snapshot RPC returns Unimplemented |
+| test_member_list | PASS | MemberList RPC succeeds |
+| test_status | PASS | Maintenance Status returns version |
+| test_auth_enable_disable | PASS | AuthEnable/AuthDisable RPCs |
+| test_range_with_limit | PASS | Put 10 keys, Range with limit=5 |
+| test_concurrent_puts | PASS | 20 concurrent puts, verify all present |
 
 ---
 
@@ -134,10 +144,9 @@ Integration tests are broken because they:
 **Description:** The maintenance endpoint status response is missing required fields, causing a panic.
 **Fix:** Populate all StatusResponse fields.
 
-### 4. Integration Tests Broken
-**Severity:** Low (unit tests cover core logic)
-**Description:** All 12 integration tests fail due to HTTP health check against gRPC server and port collision.
-**Fix:** Rewrite with tonic gRPC client and random port allocation.
+### 4. Integration Tests: Snapshot Not Implemented
+**Severity:** Low
+**Description:** test_snapshot_restore is ignored because the Maintenance Snapshot RPC returns Unimplemented. All other 11 integration tests pass.
 
 ---
 

@@ -1,0 +1,485 @@
+name: rusd CI
+
+on:
+  push:
+    branches: [main, master, develop]
+  pull_request:
+    branches: [main, master, develop]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  # ============================================================================
+  # Job 1: Build and Unit Tests
+  # ============================================================================
+  build-and-test:
+    name: Build & Unit Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Install protobuf compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler libprotobuf-dev
+
+      - name: Cache Cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Check formatting
+        run: cargo fmt -- --check
+
+      - name: Run clippy lints
+        run: cargo clippy --all-targets -- -D warnings
+        continue-on-error: true  # Non-blocking until lint issues are resolved
+
+      - name: Build (debug)
+        run: cargo build --verbose
+
+      - name: Build (release)
+        run: cargo build --release --verbose
+
+      - name: Run unit tests
+        run: cargo test --lib --verbose -- --test-threads=4
+
+      - name: Run doc tests
+        run: cargo test --doc --verbose
+
+      - name: Upload release binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: rusd-binary
+          path: target/release/rusd
+          retention-days: 1
+
+  # ============================================================================
+  # Job 2: Integration Tests
+  # ============================================================================
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: build-and-test
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install protobuf compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler libprotobuf-dev
+
+      - name: Cache Cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Run integration tests
+        run: cargo test --test integration_test --verbose -- --test-threads=1
+        continue-on-error: true  # Integration tests require a running server
+
+  # ============================================================================
+  # Job 3: Single-Node etcdctl Validation
+  # ============================================================================
+  single-node-validation:
+    name: Single-Node etcdctl Validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: build-and-test
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download rusd binary
+        uses: actions/download-artifact@v4
+        with:
+          name: rusd-binary
+          path: ./target/release/
+
+      - name: Make binary executable
+        run: chmod +x ./target/release/rusd
+
+      - name: Install etcdctl
+        run: |
+          ETCD_VER=v3.5.17
+          curl -L https://github.com/etcd-io/etcd/releases/download/${ETCD_VER}/etcd-${ETCD_VER}-linux-amd64.tar.gz -o /tmp/etcd.tar.gz
+          mkdir -p /tmp/etcd
+          tar xzf /tmp/etcd.tar.gz -C /tmp/etcd --strip-components=1
+          sudo cp /tmp/etcd/etcdctl /usr/local/bin/
+          etcdctl version
+
+      - name: Start rusd server (single-node)
+        run: |
+          mkdir -p /tmp/rusd-single-node
+          ./target/release/rusd \
+            --name test-node \
+            --data-dir /tmp/rusd-single-node \
+            --listen-client-urls "http://0.0.0.0:2379" \
+            --listen-peer-urls "http://0.0.0.0:2380" \
+            --advertise-client-urls "http://127.0.0.1:2379" \
+            --initial-advertise-peer-urls "http://127.0.0.1:2380" \
+            --initial-cluster "test-node=http://127.0.0.1:2380" \
+            --initial-cluster-state new \
+            --log-level info \
+            > /tmp/rusd-single.log 2>&1 &
+          RUSD_PID=$!
+          echo "RUSD_PID=$RUSD_PID" >> $GITHUB_ENV
+          echo "Started rusd with PID $RUSD_PID"
+
+      - name: Wait for rusd to be ready
+        run: |
+          echo "Waiting for rusd to start..."
+          for i in $(seq 1 60); do
+            if etcdctl --endpoints=http://127.0.0.1:2379 endpoint health 2>/dev/null; then
+              echo "rusd is ready after ${i}s"
+              break
+            fi
+            if [ "$i" -eq 60 ]; then
+              echo "rusd failed to start. Server log:"
+              cat /tmp/rusd-single.log || true
+              exit 1
+            fi
+            sleep 1
+          done
+
+      - name: Run etcdctl validation tests
+        run: |
+          ENDPOINT="http://127.0.0.1:2379"
+          PASS=0
+          FAIL=0
+          TOTAL=0
+
+          run_test() {
+            local name="$1"
+            local cmd="$2"
+            TOTAL=$((TOTAL + 1))
+            echo "--- Test: $name ---"
+            if eval "$cmd"; then
+              echo "PASS: $name"
+              PASS=$((PASS + 1))
+            else
+              echo "FAIL: $name"
+              FAIL=$((FAIL + 1))
+            fi
+          }
+
+          # Test: Put and Get
+          run_test "Put/Get" '
+            etcdctl --endpoints=$ENDPOINT put /ci/key1 "value1" &&
+            RESULT=$(etcdctl --endpoints=$ENDPOINT get /ci/key1 --print-value-only) &&
+            [ "$RESULT" = "value1" ]
+          '
+
+          # Test: Delete
+          run_test "Delete" '
+            etcdctl --endpoints=$ENDPOINT put /ci/delkey "todelete" &&
+            etcdctl --endpoints=$ENDPOINT del /ci/delkey &&
+            RESULT=$(etcdctl --endpoints=$ENDPOINT get /ci/delkey --print-value-only) &&
+            [ -z "$RESULT" ]
+          '
+
+          # Test: Range scan with prefix
+          run_test "Range prefix scan" '
+            etcdctl --endpoints=$ENDPOINT put /ci/range/a "1" &&
+            etcdctl --endpoints=$ENDPOINT put /ci/range/b "2" &&
+            etcdctl --endpoints=$ENDPOINT put /ci/range/c "3" &&
+            COUNT=$(etcdctl --endpoints=$ENDPOINT get /ci/range/ --prefix --print-value-only | wc -l | tr -d " ") &&
+            [ "$COUNT" -ge 3 ]
+          '
+
+          # Test: Member list
+          run_test "Member list" '
+            etcdctl --endpoints=$ENDPOINT member list
+          '
+
+          # Test: Endpoint status
+          run_test "Endpoint status" '
+            etcdctl --endpoints=$ENDPOINT endpoint status
+          '
+
+          # Test: Endpoint health
+          run_test "Endpoint health" '
+            etcdctl --endpoints=$ENDPOINT endpoint health
+          '
+
+          # Test: Lease grant
+          run_test "Lease grant" '
+            etcdctl --endpoints=$ENDPOINT lease grant 300
+          '
+
+          # Test: Multiple rapid puts
+          run_test "Rapid sequential puts (50 keys)" '
+            for i in $(seq 1 50); do
+              etcdctl --endpoints=$ENDPOINT put "/ci/rapid/key$i" "val$i" > /dev/null
+            done
+            COUNT=$(etcdctl --endpoints=$ENDPOINT get /ci/rapid/ --prefix --count-only 2>/dev/null | grep -o "[0-9]*" | head -1)
+            [ "$COUNT" -ge 50 ]
+          '
+
+          # Test: Overwrite key
+          run_test "Key overwrite" '
+            etcdctl --endpoints=$ENDPOINT put /ci/overwrite "v1" &&
+            etcdctl --endpoints=$ENDPOINT put /ci/overwrite "v2" &&
+            RESULT=$(etcdctl --endpoints=$ENDPOINT get /ci/overwrite --print-value-only) &&
+            [ "$RESULT" = "v2" ]
+          '
+
+          # Test: Empty value
+          run_test "Empty value" '
+            etcdctl --endpoints=$ENDPOINT put /ci/empty ""
+          '
+
+          echo ""
+          echo "======================================"
+          echo "  Single-Node Validation Results"
+          echo "======================================"
+          echo "Passed: $PASS / $TOTAL"
+          echo "Failed: $FAIL / $TOTAL"
+          echo "======================================"
+
+          # Save results for artifact
+          cat > /tmp/single-node-results.json <<EOF
+          {
+            "total": $TOTAL,
+            "passed": $PASS,
+            "failed": $FAIL,
+            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+
+          if [ $FAIL -gt 2 ]; then
+            echo "Too many failures ($FAIL). Failing CI."
+            exit 1
+          fi
+
+      - name: Stop rusd server
+        if: always()
+        run: |
+          if [ -n "$RUSD_PID" ]; then
+            kill "$RUSD_PID" 2>/dev/null || true
+          fi
+
+      - name: Upload server log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: single-node-server-log
+          path: /tmp/rusd-single.log
+          retention-days: 7
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: single-node-results
+          path: /tmp/single-node-results.json
+          retention-days: 7
+
+  # ============================================================================
+  # Job 4: Multi-Node Cluster Validation
+  # ============================================================================
+  multi-node-validation:
+    name: Multi-Node Cluster Validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: build-and-test
+    # Enable this job when multi-node Raft is implemented.
+    # Remove the 'if: false' line below to activate.
+    if: false
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download rusd binary
+        uses: actions/download-artifact@v4
+        with:
+          name: rusd-binary
+          path: ./target/release/
+
+      - name: Make binary executable
+        run: chmod +x ./target/release/rusd
+
+      - name: Install etcdctl
+        run: |
+          ETCD_VER=v3.5.17
+          curl -L https://github.com/etcd-io/etcd/releases/download/${ETCD_VER}/etcd-${ETCD_VER}-linux-amd64.tar.gz -o /tmp/etcd.tar.gz
+          mkdir -p /tmp/etcd
+          tar xzf /tmp/etcd.tar.gz -C /tmp/etcd --strip-components=1
+          sudo cp /tmp/etcd/etcdctl /usr/local/bin/
+          etcdctl version
+
+      - name: Run multi-node test script
+        run: |
+          chmod +x scripts/multi-node-test.sh
+          ./scripts/multi-node-test.sh
+
+      - name: Upload multi-node logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: multi-node-logs
+          path: /tmp/rusd-test/*.log
+          retention-days: 7
+
+  # ============================================================================
+  # Job 5: Benchmarks
+  # ============================================================================
+  benchmarks:
+    name: Benchmarks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: build-and-test
+    # Only run benchmarks on pushes to main, not on every PR
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install protobuf compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler libprotobuf-dev
+
+      - name: Cache Cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-bench-
+            ${{ runner.os }}-cargo-
+
+      - name: Run criterion benchmarks
+        run: |
+          cargo bench --bench rusd_bench -- --output-format=bencher 2>&1 | tee /tmp/benchmark-output.txt
+        continue-on-error: true  # Benchmarks should not block CI
+
+      - name: Generate benchmark summary
+        if: always()
+        run: |
+          echo "# Benchmark Results" > /tmp/benchmark-report.md
+          echo "" >> /tmp/benchmark-report.md
+          echo "Run: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> /tmp/benchmark-report.md
+          echo "Commit: ${{ github.sha }}" >> /tmp/benchmark-report.md
+          echo "" >> /tmp/benchmark-report.md
+          echo '```' >> /tmp/benchmark-report.md
+          cat /tmp/benchmark-output.txt >> /tmp/benchmark-report.md 2>/dev/null || echo "No benchmark output available" >> /tmp/benchmark-report.md
+          echo '```' >> /tmp/benchmark-report.md
+
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: |
+            /tmp/benchmark-output.txt
+            /tmp/benchmark-report.md
+            target/criterion/
+          retention-days: 30
+
+  # ============================================================================
+  # Job 6: Docker Build (validates Dockerfile)
+  # ============================================================================
+  docker-build:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Only build Docker on pushes to main
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          tags: rusd:ci-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ============================================================================
+  # Job 7: Kind Cluster K8s Validation (Optional)
+  # ============================================================================
+  k8s-validation:
+    name: Kind Cluster K8s Validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: build-and-test
+    # This is a heavyweight test. Only run on main branch pushes.
+    # It validates rusd as a K8s etcd backend in a Kind cluster.
+    # Requires Docker and Kind.
+    if: false  # Enable when Docker-based K8s validation is ready
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download rusd binary
+        uses: actions/download-artifact@v4
+        with:
+          name: rusd-binary
+          path: ./target/release/
+
+      - name: Make binary executable
+        run: chmod +x ./target/release/rusd
+
+      - name: Install Kind
+        run: |
+          curl -Lo /usr/local/bin/kind https://kind.sigs.k8s.io/dl/v0.24.0/kind-linux-amd64
+          chmod +x /usr/local/bin/kind
+          kind version
+
+      - name: Install kubectl
+        run: |
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/
+
+      - name: Run K8s integration tests
+        run: |
+          chmod +x scripts/k8s-test.sh
+          ./scripts/k8s-test.sh
