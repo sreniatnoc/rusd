@@ -20,25 +20,25 @@ use tokio::task::JoinHandle;
 use tonic::transport::{Identity, Server, ServerTlsConfig};
 use tracing::{debug, error, info, warn};
 
-use crate::api::kv_service::KvService;
-use crate::api::watch_service::WatchService;
-use crate::api::lease_service::LeaseService;
-use crate::api::cluster_service::ClusterService;
-use crate::api::maintenance_service::MaintenanceService;
 use crate::api::auth_service::AuthService;
+use crate::api::cluster_service::ClusterService;
+use crate::api::kv_service::KvService;
+use crate::api::lease_service::LeaseService;
+use crate::api::maintenance_service::MaintenanceService;
+use crate::api::raft_internal_service::RaftInternalService;
+use crate::api::watch_service::WatchService;
 use crate::auth::AuthStore;
 use crate::cluster::ClusterManager;
-use crate::api::raft_internal_service::RaftInternalService;
 use crate::etcdserverpb::{
     auth_server::AuthServer, cluster_server::ClusterServer, kv_server::KvServer,
     lease_server::LeaseServer, maintenance_server::MaintenanceServer, watch_server::WatchServer,
 };
-use crate::raftpb::raft_internal_server::RaftInternalServer;
 use crate::lease::LeaseManager;
-use crate::raft::config::{RaftConfig, PeerConfig};
+use crate::raft::config::{PeerConfig, RaftConfig};
 use crate::raft::log::RaftLog;
 use crate::raft::node::RaftNode;
 use crate::raft::transport::GrpcTransport;
+use crate::raftpb::raft_internal_server::RaftInternalServer;
 use crate::storage::backend::{Backend, BackendConfig};
 use crate::storage::mvcc::MvccStore;
 use crate::watch::WatchHub;
@@ -276,14 +276,24 @@ impl RusdServer {
 
         // Build peer addresses map from initial cluster configuration
         let mut peer_addresses = std::collections::HashMap::new();
-        let peers = parse_peer_configs_with_token(&config.initial_cluster, &config.name, &config.initial_cluster_token);
+        let peers = parse_peer_configs_with_token(
+            &config.initial_cluster,
+            &config.name,
+            &config.initial_cluster_token,
+        );
         for peer in &peers {
             peer_addresses.insert(peer.id, peer.address.clone());
         }
         // Create transport with optional TLS
         let transport = if config.peer_tls_cert_file.is_some() || config.tls_cert_file.is_some() {
-            let cert_file = config.peer_tls_cert_file.as_deref().or(config.tls_cert_file.as_deref());
-            let ca_file = config.peer_tls_trusted_ca_file.as_deref().or(config.tls_trusted_ca_file.as_deref());
+            let cert_file = config
+                .peer_tls_cert_file
+                .as_deref()
+                .or(config.tls_cert_file.as_deref());
+            let ca_file = config
+                .peer_tls_trusted_ca_file
+                .as_deref()
+                .or(config.tls_trusted_ca_file.as_deref());
             let mut tls = tonic::transport::ClientTlsConfig::new();
             if let Some(ca_path) = ca_file {
                 let ca_pem = std::fs::read(ca_path)
@@ -291,10 +301,14 @@ impl RusdServer {
                 tls = tls.ca_certificate(tonic::transport::Certificate::from_pem(&ca_pem));
             }
             if let Some(cert_path) = cert_file {
-                let key_file = config.peer_tls_key_file.as_deref().or(config.tls_key_file.as_deref())
+                let key_file = config
+                    .peer_tls_key_file
+                    .as_deref()
+                    .or(config.tls_key_file.as_deref())
                     .ok_or_else(|| anyhow::anyhow!("Peer cert requires peer key"))?;
-                let cert_pem = std::fs::read(cert_path)
-                    .map_err(|e| anyhow::anyhow!("Failed to read peer cert {}: {}", cert_path, e))?;
+                let cert_pem = std::fs::read(cert_path).map_err(|e| {
+                    anyhow::anyhow!("Failed to read peer cert {}: {}", cert_path, e)
+                })?;
                 let key_pem = std::fs::read(key_file)
                     .map_err(|e| anyhow::anyhow!("Failed to read peer key {}: {}", key_file, e))?;
                 tls = tls.identity(tonic::transport::Identity::from_pem(&cert_pem, &key_pem));
@@ -306,7 +320,11 @@ impl RusdServer {
         let (apply_tx, apply_rx) = mpsc::channel(10000);
 
         // Parse peers from initial_cluster config
-        let peers = parse_peer_configs_with_token(&config.initial_cluster, &config.name, &config.initial_cluster_token);
+        let peers = parse_peer_configs_with_token(
+            &config.initial_cluster,
+            &config.name,
+            &config.initial_cluster_token,
+        );
 
         let raft_config = RaftConfig {
             id: member_id,
@@ -383,7 +401,10 @@ impl RusdServer {
     /// Run the server, starting the gRPC server and all background tasks.
     ///
     /// This method will block until the shutdown signal is received or an error occurs.
-    pub async fn run(mut self, shutdown: impl std::future::Future<Output = ()>) -> anyhow::Result<()> {
+    pub async fn run(
+        mut self,
+        shutdown: impl std::future::Future<Output = ()>,
+    ) -> anyhow::Result<()> {
         // Start Raft node's event loop (now Send-safe with std::sync::Mutex)
         let raft_handle = self.raft.clone().run();
         self.background_tasks.push(raft_handle);
@@ -396,9 +417,18 @@ impl RusdServer {
 
             // Configure peer TLS (falls back to client TLS if peer-specific not set)
             let peer_tls = load_tls_config(
-                self.config.peer_tls_cert_file.as_deref().or(self.config.tls_cert_file.as_deref()),
-                self.config.peer_tls_key_file.as_deref().or(self.config.tls_key_file.as_deref()),
-                self.config.peer_tls_trusted_ca_file.as_deref().or(self.config.tls_trusted_ca_file.as_deref()),
+                self.config
+                    .peer_tls_cert_file
+                    .as_deref()
+                    .or(self.config.tls_cert_file.as_deref()),
+                self.config
+                    .peer_tls_key_file
+                    .as_deref()
+                    .or(self.config.tls_key_file.as_deref()),
+                self.config
+                    .peer_tls_trusted_ca_file
+                    .as_deref()
+                    .or(self.config.tls_trusted_ca_file.as_deref()),
             )?;
 
             let mut peer_builder = Server::builder();
@@ -432,8 +462,16 @@ impl RusdServer {
         info!(addr = %addr, "Starting gRPC server");
 
         // Create service instances matching their actual constructors
-        let kv_service = KvService::new(self.store.clone(), self.raft.clone(), self.watch_hub.clone());
-        let watch_service = WatchService::new(self.store.clone(), self.raft.clone(), self.watch_hub.clone());
+        let kv_service = KvService::new(
+            self.store.clone(),
+            self.raft.clone(),
+            self.watch_hub.clone(),
+        );
+        let watch_service = WatchService::new(
+            self.store.clone(),
+            self.raft.clone(),
+            self.watch_hub.clone(),
+        );
 
         // LeaseService needs the ApiLeaseManager bridge (raft + core lease manager + store + watch_hub)
         let api_lease_mgr = Arc::new(crate::api::lease_service::ApiLeaseManager::new(
@@ -448,8 +486,7 @@ impl RusdServer {
         let members = Arc::new(parking_lot::RwLock::new(Vec::new()));
         let cluster_service = ClusterService::new(self.raft.clone(), members);
 
-        let maintenance_service =
-            MaintenanceService::new(self.store.clone(), self.raft.clone());
+        let maintenance_service = MaintenanceService::new(self.store.clone(), self.raft.clone());
 
         // AuthService needs the AuthManager wrapper
         let auth_mgr_for_service = Arc::new(crate::api::auth_service::AuthManager::new(
@@ -473,8 +510,8 @@ impl RusdServer {
         let server = builder
             .http2_keepalive_interval(Some(Duration::from_secs(10)))
             .http2_keepalive_timeout(Some(Duration::from_secs(20)))
-            .initial_connection_window_size(Some(1024 * 1024))  // 1MB
-            .initial_stream_window_size(Some(1024 * 1024))      // 1MB
+            .initial_connection_window_size(Some(1024 * 1024)) // 1MB
+            .initial_stream_window_size(Some(1024 * 1024)) // 1MB
             .add_service(KvServer::new(kv_service))
             .add_service(WatchServer::new(watch_service))
             .add_service(LeaseServer::new(lease_service))
@@ -552,7 +589,11 @@ fn parse_peer_configs(initial_cluster: &str, local_name: &str) -> Vec<PeerConfig
 }
 
 /// Parse initial cluster string with a specific cluster token for ID computation.
-fn parse_peer_configs_with_token(initial_cluster: &str, local_name: &str, cluster_token: &str) -> Vec<PeerConfig> {
+fn parse_peer_configs_with_token(
+    initial_cluster: &str,
+    local_name: &str,
+    cluster_token: &str,
+) -> Vec<PeerConfig> {
     let mut peers = Vec::new();
     for member_str in initial_cluster.split(',') {
         let member_str = member_str.trim();
@@ -665,7 +706,10 @@ fn load_tls_config(
             .map_err(|e| anyhow::anyhow!("Failed to read CA file {}: {}", ca_path, e))?;
         let ca_cert = tonic::transport::Certificate::from_pem(&ca_pem);
         tls_config = tls_config.client_ca_root(ca_cert);
-        info!("mTLS enabled: client certificates will be verified against {}", ca_path);
+        info!(
+            "mTLS enabled: client certificates will be verified against {}",
+            ca_path
+        );
     }
 
     info!("TLS configured with cert={}, key={}", cert_path, key_path);
@@ -711,7 +755,11 @@ async fn process_lease_expiries(
     watch_hub: Arc<WatchHub>,
 ) {
     while let Some(event) = expire_rx.recv().await {
-        info!(lease_id = event.lease_id, key_count = event.keys.len(), "Processing lease expiry");
+        info!(
+            lease_id = event.lease_id,
+            key_count = event.keys.len(),
+            "Processing lease expiry"
+        );
         for key in &event.keys {
             // Compute a single-key end range: key + 1 byte to delete exactly one key.
             // Previously this used &[] which caused unbounded range delete.
@@ -779,10 +827,7 @@ mod tests {
             ClusterState::from_str("existing").unwrap(),
             ClusterState::Existing
         );
-        assert_eq!(
-            ClusterState::from_str("NEW").unwrap(),
-            ClusterState::New
-        );
+        assert_eq!(ClusterState::from_str("NEW").unwrap(), ClusterState::New);
         assert!(ClusterState::from_str("invalid").is_err());
     }
 
@@ -816,8 +861,7 @@ mod tests {
 
     #[test]
     fn test_parse_socket_addrs() {
-        let addrs =
-            parse_socket_addrs(&["http://0.0.0.0:2379".to_string()]).unwrap();
+        let addrs = parse_socket_addrs(&["http://0.0.0.0:2379".to_string()]).unwrap();
         assert_eq!(addrs.len(), 1);
         assert_eq!(addrs[0].port(), 2379);
     }

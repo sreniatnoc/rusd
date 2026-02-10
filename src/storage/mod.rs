@@ -14,14 +14,14 @@
 //! - Background compaction to reclaim storage space
 
 pub mod backend;
-pub mod mvcc;
-pub mod index;
 pub mod compaction;
+pub mod index;
+pub mod mvcc;
 
 pub use backend::{Backend, BackendConfig, BackendError, BackendResult};
-pub use mvcc::{MvccStore, KeyValue, RangeResult, Event};
+pub use compaction::{CompactionMode, Compactor};
 pub use index::{KeyIndex, Revision};
-pub use compaction::{Compactor, CompactionMode};
+pub use mvcc::{Event, KeyValue, MvccStore, RangeResult};
 
 use thiserror::Error;
 

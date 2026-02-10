@@ -29,19 +29,19 @@ pub mod raftpb {
 }
 
 // Core modules
-pub mod storage;
-pub mod raft;
 pub mod api;
-pub mod watch;
-pub mod lease;
 pub mod auth;
 pub mod cluster;
+pub mod lease;
+pub mod raft;
 pub mod server;
+pub mod storage;
+pub mod watch;
 
 // Re-export main types at crate root for convenience
-pub use server::{RusdServer, ServerConfig};
-pub use storage::{Backend, MvccStore, Event, KeyValue};
-pub use watch::WatchHub;
-pub use lease::LeaseManager;
 pub use auth::AuthStore;
 pub use cluster::ClusterManager;
+pub use lease::LeaseManager;
+pub use server::{RusdServer, ServerConfig};
+pub use storage::{Backend, Event, KeyValue, MvccStore};
+pub use watch::WatchHub;

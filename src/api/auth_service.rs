@@ -1,8 +1,8 @@
-use tonic::{Request, Response, Status, Code};
 use std::sync::Arc;
+use tonic::{Code, Request, Response, Status};
 
-use crate::etcdserverpb::*;
 use crate::etcdserverpb::auth_server::Auth;
+use crate::etcdserverpb::*;
 use crate::raft::node::RaftNode;
 
 /// Bridge between the server layer and the auth API.
@@ -67,16 +67,15 @@ impl Auth for AuthService {
     ) -> Result<Response<AuthEnableResponse>, Status> {
         // Check if leader
         if !self.auth_mgr.raft.is_leader() {
-            return Err(Status::new(
-                Code::FailedPrecondition,
-                "not a leader",
-            ));
+            return Err(Status::new(Code::FailedPrecondition, "not a leader"));
         }
 
         // Propose to Raft
         let enable_cmd = "ENABLE_AUTH";
 
-        self.auth_mgr.raft.propose(enable_cmd.as_bytes().to_vec())
+        self.auth_mgr
+            .raft
+            .propose(enable_cmd.as_bytes().to_vec())
             .await
             .map_err(|e| Status::new(Code::Internal, format!("enable auth failed: {}", e)))?;
 
@@ -93,16 +92,15 @@ impl Auth for AuthService {
     ) -> Result<Response<AuthDisableResponse>, Status> {
         // Check if leader
         if !self.auth_mgr.raft.is_leader() {
-            return Err(Status::new(
-                Code::FailedPrecondition,
-                "not a leader",
-            ));
+            return Err(Status::new(Code::FailedPrecondition, "not a leader"));
         }
 
         // Propose to Raft
         let disable_cmd = "DISABLE_AUTH";
 
-        self.auth_mgr.raft.propose(disable_cmd.as_bytes().to_vec())
+        self.auth_mgr
+            .raft
+            .propose(disable_cmd.as_bytes().to_vec())
             .await
             .map_err(|e| Status::new(Code::Internal, format!("disable auth failed: {}", e)))?;
 
@@ -172,16 +170,15 @@ impl Auth for AuthService {
 
         // Check if leader
         if !self.auth_mgr.raft.is_leader() {
-            return Err(Status::new(
-                Code::FailedPrecondition,
-                "not a leader",
-            ));
+            return Err(Status::new(Code::FailedPrecondition, "not a leader"));
         }
 
         // Propose to Raft
         let add_cmd = format!("ADD_USER:{}:{}", req.name, req.password);
 
-        self.auth_mgr.raft.propose(add_cmd.into_bytes())
+        self.auth_mgr
+            .raft
+            .propose(add_cmd.into_bytes())
             .await
             .map_err(|e| Status::new(Code::Internal, format!("add user failed: {}", e)))?;
 
@@ -208,16 +205,15 @@ impl Auth for AuthService {
 
         // Check if leader
         if !self.auth_mgr.raft.is_leader() {
-            return Err(Status::new(
-                Code::FailedPrecondition,
-                "not a leader",
-            ));
+            return Err(Status::new(Code::FailedPrecondition, "not a leader"));
         }
 
         // Propose to Raft
         let delete_cmd = format!("DELETE_USER:{}", req.name);
 
-        self.auth_mgr.raft.propose(delete_cmd.into_bytes())
+        self.auth_mgr
+            .raft
+            .propose(delete_cmd.into_bytes())
             .await
             .map_err(|e| Status::new(Code::Internal, format!("delete user failed: {}", e)))?;
 
@@ -286,16 +282,15 @@ impl Auth for AuthService {
 
         // Check if leader
         if !self.auth_mgr.raft.is_leader() {
-            return Err(Status::new(
-                Code::FailedPrecondition,
-                "not a leader",
-            ));
+            return Err(Status::new(Code::FailedPrecondition, "not a leader"));
         }
 
         // Propose to Raft
         let change_cmd = format!("CHANGE_PASSWORD:{}:{}", req.name, req.password);
 
-        self.auth_mgr.raft.propose(change_cmd.into_bytes())
+        self.auth_mgr
+            .raft
+            .propose(change_cmd.into_bytes())
             .await
             .map_err(|e| Status::new(Code::Internal, format!("change password failed: {}", e)))?;
 
@@ -329,16 +324,15 @@ impl Auth for AuthService {
 
         // Check if leader
         if !self.auth_mgr.raft.is_leader() {
-            return Err(Status::new(
-                Code::FailedPrecondition,
-                "not a leader",
-            ));
+            return Err(Status::new(Code::FailedPrecondition, "not a leader"));
         }
 
         // Propose to Raft
         let grant_cmd = format!("GRANT_ROLE:{}:{}", req.user, req.role);
 
-        self.auth_mgr.raft.propose(grant_cmd.into_bytes())
+        self.auth_mgr
+            .raft
+            .propose(grant_cmd.into_bytes())
             .await
             .map_err(|e| Status::new(Code::Internal, format!("grant role failed: {}", e)))?;
 
@@ -372,16 +366,15 @@ impl Auth for AuthService {
 
         // Check if leader
         if !self.auth_mgr.raft.is_leader() {
-            return Err(Status::new(
-                Code::FailedPrecondition,
-                "not a leader",
-            ));
+            return Err(Status::new(Code::FailedPrecondition, "not a leader"));
         }
 
         // Propose to Raft
         let revoke_cmd = format!("REVOKE_ROLE:{}:{}", req.name, req.role);
 
-        self.auth_mgr.raft.propose(revoke_cmd.into_bytes())
+        self.auth_mgr
+            .raft
+            .propose(revoke_cmd.into_bytes())
             .await
             .map_err(|e| Status::new(Code::Internal, format!("revoke role failed: {}", e)))?;
 
@@ -408,16 +401,15 @@ impl Auth for AuthService {
 
         // Check if leader
         if !self.auth_mgr.raft.is_leader() {
-            return Err(Status::new(
-                Code::FailedPrecondition,
-                "not a leader",
-            ));
+            return Err(Status::new(Code::FailedPrecondition, "not a leader"));
         }
 
         // Propose to Raft
         let add_cmd = format!("ADD_ROLE:{}", req.name);
 
-        self.auth_mgr.raft.propose(add_cmd.into_bytes())
+        self.auth_mgr
+            .raft
+            .propose(add_cmd.into_bytes())
             .await
             .map_err(|e| Status::new(Code::Internal, format!("add role failed: {}", e)))?;
 
@@ -444,16 +436,15 @@ impl Auth for AuthService {
 
         // Check if leader
         if !self.auth_mgr.raft.is_leader() {
-            return Err(Status::new(
-                Code::FailedPrecondition,
-                "not a leader",
-            ));
+            return Err(Status::new(Code::FailedPrecondition, "not a leader"));
         }
 
         // Propose to Raft
         let delete_cmd = format!("DELETE_ROLE:{}", req.role);
 
-        self.auth_mgr.raft.propose(delete_cmd.into_bytes())
+        self.auth_mgr
+            .raft
+            .propose(delete_cmd.into_bytes())
             .await
             .map_err(|e| Status::new(Code::Internal, format!("delete role failed: {}", e)))?;
 
@@ -523,17 +514,16 @@ impl Auth for AuthService {
 
         // Check if leader
         if !self.auth_mgr.raft.is_leader() {
-            return Err(Status::new(
-                Code::FailedPrecondition,
-                "not a leader",
-            ));
+            return Err(Status::new(Code::FailedPrecondition, "not a leader"));
         }
 
         // Propose to Raft
         // TODO: Serialize permission using proto encoding instead of serde_json
         let grant_cmd = format!("GRANT_PERMISSION:{}", req.name);
 
-        self.auth_mgr.raft.propose(grant_cmd.into_bytes())
+        self.auth_mgr
+            .raft
+            .propose(grant_cmd.into_bytes())
             .await
             .map_err(|e| Status::new(Code::Internal, format!("grant permission failed: {}", e)))?;
 
@@ -560,17 +550,16 @@ impl Auth for AuthService {
 
         // Check if leader
         if !self.auth_mgr.raft.is_leader() {
-            return Err(Status::new(
-                Code::FailedPrecondition,
-                "not a leader",
-            ));
+            return Err(Status::new(Code::FailedPrecondition, "not a leader"));
         }
 
         // Propose to Raft
         // TODO: Serialize key/range_end using proto encoding
         let revoke_cmd = format!("REVOKE_PERMISSION:{}", req.role);
 
-        self.auth_mgr.raft.propose(revoke_cmd.into_bytes())
+        self.auth_mgr
+            .raft
+            .propose(revoke_cmd.into_bytes())
             .await
             .map_err(|e| Status::new(Code::Internal, format!("revoke permission failed: {}", e)))?;
 

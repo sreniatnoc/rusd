@@ -14,9 +14,9 @@
 //! 3. Current and compact revision counters
 
 use crate::storage::{Backend, BackendError, KeyIndex, StorageError, StorageResult};
+use parking_lot::RwLock;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
-use parking_lot::RwLock;
 use std::time::Instant;
 use tracing::{debug, info, warn};
 
@@ -80,7 +80,9 @@ impl KeyValue {
     /// Deserializes a KeyValue from kv_rev tree bytes (key embedded in value).
     fn decode_with_key(data: &[u8]) -> StorageResult<Self> {
         if data.len() < 36 {
-            return Err(StorageError::Mvcc("Invalid KeyValue encoding (with key)".to_string()));
+            return Err(StorageError::Mvcc(
+                "Invalid KeyValue encoding (with key)".to_string(),
+            ));
         }
 
         let create_revision = i64::from_le_bytes(data[0..8].try_into().unwrap());
@@ -90,14 +92,19 @@ impl KeyValue {
 
         let key_len = u32::from_le_bytes(data[32..36].try_into().unwrap()) as usize;
         if 36 + key_len + 4 > data.len() {
-            return Err(StorageError::Mvcc("Invalid KeyValue encoding (key too long)".to_string()));
+            return Err(StorageError::Mvcc(
+                "Invalid KeyValue encoding (key too long)".to_string(),
+            ));
         }
         let key = data[36..36 + key_len].to_vec();
 
         let val_offset = 36 + key_len;
-        let value_len = u32::from_le_bytes(data[val_offset..val_offset + 4].try_into().unwrap()) as usize;
+        let value_len =
+            u32::from_le_bytes(data[val_offset..val_offset + 4].try_into().unwrap()) as usize;
         if val_offset + 4 + value_len > data.len() {
-            return Err(StorageError::Mvcc("Invalid KeyValue encoding (value too long)".to_string()));
+            return Err(StorageError::Mvcc(
+                "Invalid KeyValue encoding (value too long)".to_string(),
+            ));
         }
         let value = data[val_offset + 4..val_offset + 4 + value_len].to_vec();
 
@@ -241,10 +248,7 @@ impl MvccStore {
             write_batch: Arc::new(parking_lot::Mutex::new(WriteBatch::new())),
         });
 
-        info!(
-            "MVCC store initialized with revision={}",
-            current_revision
-        );
+        info!("MVCC store initialized with revision={}", current_revision);
 
         Ok(store)
     }
@@ -274,7 +278,12 @@ impl MvccStore {
     }
 
     /// Stores a single key-value pair, returning (revision, new_kv, prev_kv).
-    pub fn put(&self, key: &[u8], value: &[u8], lease: i64) -> StorageResult<(i64, KeyValue, Option<KeyValue>)> {
+    pub fn put(
+        &self,
+        key: &[u8],
+        value: &[u8],
+        lease: i64,
+    ) -> StorageResult<(i64, KeyValue, Option<KeyValue>)> {
         // Get the current revision of this key (if any)
         let index = self.key_index.read();
         let _current_version = index
@@ -304,7 +313,10 @@ impl MvccStore {
             create_revision: if version == 1 {
                 new_revision
             } else {
-                prev_kv.as_ref().map(|kv| kv.create_revision).unwrap_or(new_revision)
+                prev_kv
+                    .as_ref()
+                    .map(|kv| kv.create_revision)
+                    .unwrap_or(new_revision)
             },
             mod_revision: new_revision,
             version,
@@ -329,17 +341,17 @@ impl MvccStore {
             index.put(key, crate::storage::index::Revision::new(new_revision, 0));
         }
 
-        debug!("Put key {:?} at revision {}", String::from_utf8_lossy(key), new_revision);
+        debug!(
+            "Put key {:?} at revision {}",
+            String::from_utf8_lossy(key),
+            new_revision
+        );
 
         Ok((new_revision, kv, prev_kv))
     }
 
     /// Deletes a range of keys, returning the revision and deleted KeyValues.
-    pub fn delete_range(
-        &self,
-        start: &[u8],
-        end: &[u8],
-    ) -> StorageResult<(i64, Vec<KeyValue>)> {
+    pub fn delete_range(&self, start: &[u8], end: &[u8]) -> StorageResult<(i64, Vec<KeyValue>)> {
         // Allocate new revision
         let new_revision = self.next_revision();
 
@@ -391,7 +403,11 @@ impl MvccStore {
             }
         }
 
-        debug!("Deleted {} keys at revision {}", deleted.len(), new_revision);
+        debug!(
+            "Deleted {} keys at revision {}",
+            deleted.len(),
+            new_revision
+        );
 
         Ok((new_revision, deleted))
     }
@@ -439,7 +455,8 @@ impl MvccStore {
                 // Read latest from kv tree
                 if let Ok(Some(kv_data)) = self.backend.get("kv", &key) {
                     if let Ok(kv) = KeyValue::decode(key, &kv_data) {
-                        if kv.create_revision <= query_revision && kv.mod_revision <= query_revision {
+                        if kv.create_revision <= query_revision && kv.mod_revision <= query_revision
+                        {
                             kvs.push(kv);
                         }
                     }
@@ -457,11 +474,7 @@ impl MvccStore {
 
         let more = limit > 0 && count > kvs.len();
 
-        Ok(RangeResult {
-            kvs,
-            more,
-            count,
-        })
+        Ok(RangeResult { kvs, more, count })
     }
 
     /// Performs a transaction with compare-and-swap semantics.
@@ -530,7 +543,8 @@ impl MvccStore {
         let scan_start = start_revision.to_be_bytes();
         let scan_end = (current + 1).to_be_bytes();
 
-        let entries = self.backend
+        let entries = self
+            .backend
             .scan("kv_rev", &scan_start, &scan_end, 0)
             .map_err(|e| StorageError::Backend(e))?;
 
@@ -580,8 +594,8 @@ pub struct Event {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
     use crate::storage::BackendConfig;
+    use tempfile::TempDir;
 
     fn setup_store() -> Arc<MvccStore> {
         let temp_dir = TempDir::new().unwrap();

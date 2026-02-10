@@ -2,13 +2,13 @@ use crate::raft::config::RaftConfig;
 use crate::raft::log::RaftLog;
 use crate::raft::state::{RaftRole, RaftState};
 use crate::raft::transport::{
-    AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest,
-    InstallSnapshotResponse, RequestVoteRequest, RequestVoteResponse, RaftTransport,
+    AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest, InstallSnapshotResponse,
+    RaftTransport, RequestVoteRequest, RequestVoteResponse,
 };
-use crate::raft::{LogEntry, RaftError, RaftMessage, Result as RaftResult, EntryType};
-use std::sync::Mutex; // std::sync::Mutex guards are Send (unlike parking_lot)
+use crate::raft::{EntryType, LogEntry, RaftError, RaftMessage, Result as RaftResult};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::Mutex; // std::sync::Mutex guards are Send (unlike parking_lot)
 use std::time::Duration;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
@@ -50,7 +50,9 @@ impl RaftNode {
         }
 
         Ok(Self {
-            election_timer: Mutex::new(Some(Instant::now() + Self::random_election_timeout_static(&config))),
+            election_timer: Mutex::new(Some(
+                Instant::now() + Self::random_election_timeout_static(&config),
+            )),
             heartbeat_timer: Mutex::new(None),
             config,
             state,
@@ -67,17 +69,18 @@ impl RaftNode {
         use std::hash::{BuildHasher, Hasher};
 
         let mut hasher = RandomState::new().build_hasher();
-        hasher.write_u64(std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos() as u64);
+        hasher.write_u64(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos() as u64,
+        );
         let hash = hasher.finish();
 
         let range = self.config.election_timeout_max.as_millis()
             - self.config.election_timeout_min.as_millis();
         let offset_ms = (hash as u128 % range) as u64;
-        self.config.election_timeout_min
-            + Duration::from_millis(offset_ms)
+        self.config.election_timeout_min + Duration::from_millis(offset_ms)
     }
 
     fn random_election_timeout_static(config: &RaftConfig) -> Duration {
@@ -93,8 +96,8 @@ impl RaftNode {
         );
         let hash = hasher.finish();
 
-        let range = config.election_timeout_max.as_millis()
-            - config.election_timeout_min.as_millis();
+        let range =
+            config.election_timeout_max.as_millis() - config.election_timeout_min.as_millis();
         let offset_ms = (hash as u128 % range) as u64;
         config.election_timeout_min + Duration::from_millis(offset_ms)
     }
@@ -104,11 +107,17 @@ impl RaftNode {
 
         // Check election timeout (extract value before any .await)
         let election_expired = {
-            self.election_timer.lock().unwrap().map_or(false, |t| now > t)
+            self.election_timer
+                .lock()
+                .unwrap()
+                .map_or(false, |t| now > t)
         };
         if election_expired {
             self.start_election().await?;
-            { *self.election_timer.lock().unwrap() = Some(now + Self::random_election_timeout_static(&self.config)); }
+            {
+                *self.election_timer.lock().unwrap() =
+                    Some(now + Self::random_election_timeout_static(&self.config));
+            }
         }
 
         // Check heartbeat timeout (only for leader)
@@ -124,10 +133,14 @@ impl RaftNode {
             match heartbeat_state {
                 1 => {
                     self.send_heartbeats().await?;
-                    { *self.heartbeat_timer.lock().unwrap() = Some(now + self.config.heartbeat_interval); }
+                    {
+                        *self.heartbeat_timer.lock().unwrap() =
+                            Some(now + self.config.heartbeat_interval);
+                    }
                 }
                 2 => {
-                    { *self.heartbeat_timer.lock().unwrap() = Some(now + self.config.heartbeat_interval); }
+                    *self.heartbeat_timer.lock().unwrap() =
+                        Some(now + self.config.heartbeat_interval);
                 }
                 _ => {} // not expired yet
             }
@@ -198,7 +211,10 @@ impl RaftNode {
             let vote_tx_clone = vote_tx.clone();
 
             tokio::spawn(async move {
-                match transport_clone.send_request_vote(peer_id, request_clone).await {
+                match transport_clone
+                    .send_request_vote(peer_id, request_clone)
+                    .await
+                {
                     Ok(response) => {
                         let _ = vote_tx_clone.send(response.vote_granted).await;
                     }
@@ -232,7 +248,12 @@ impl RaftNode {
             }
         }
 
-        debug!("Pre-vote failed for term {} ({}/{})", term + 1, vote_count, total_nodes);
+        debug!(
+            "Pre-vote failed for term {} ({}/{})",
+            term + 1,
+            vote_count,
+            total_nodes
+        );
         Ok(())
     }
 
@@ -279,7 +300,10 @@ impl RaftNode {
             let state_clone = self.state.clone();
 
             tokio::spawn(async move {
-                match transport_clone.send_request_vote(peer_id, request_clone).await {
+                match transport_clone
+                    .send_request_vote(peer_id, request_clone)
+                    .await
+                {
                     Ok(response) => {
                         if response.term > new_term {
                             // Higher term discovered, step down
@@ -326,24 +350,24 @@ impl RaftNode {
 
         // Didn't get majority, remain candidate
         if !self.state.is_leader() {
-            debug!("Election for term {} inconclusive ({}/{} votes)", new_term, vote_count, total_nodes);
+            debug!(
+                "Election for term {} inconclusive ({}/{} votes)",
+                new_term, vote_count, total_nodes
+            );
         }
 
         Ok(())
     }
 
     async fn become_leader(&self) -> RaftResult<()> {
-        self.state.become_leader(
-            &self
-                .config
-                .peers
-                .iter()
-                .map(|p| p.id)
-                .collect::<Vec<_>>(),
-        );
+        self.state
+            .become_leader(&self.config.peers.iter().map(|p| p.id).collect::<Vec<_>>());
 
         // Reset heartbeat timer (guard drops before .await)
-        { *self.heartbeat_timer.lock().unwrap() = Some(Instant::now() + self.config.heartbeat_interval); }
+        {
+            *self.heartbeat_timer.lock().unwrap() =
+                Some(Instant::now() + self.config.heartbeat_interval);
+        }
 
         // Send initial heartbeats
         self.send_heartbeats().await?;
@@ -371,12 +395,7 @@ impl RaftNode {
 
             // Determine previous log index and term
             let prev_log_index = if next_idx > 0 { next_idx - 1 } else { 0 };
-            let prev_log_term = self
-                .log
-                .term_at(prev_log_index)
-                .ok()
-                .flatten()
-                .unwrap_or(0);
+            let prev_log_term = self.log.term_at(prev_log_index).ok().flatten().unwrap_or(0);
 
             // Get entries to send
             let entries: Vec<LogEntry> = self
@@ -402,10 +421,7 @@ impl RaftNode {
             let log_clone = self.log.clone();
 
             tokio::spawn(async move {
-                match transport_clone
-                    .send_append_entries(peer_id, request)
-                    .await
-                {
+                match transport_clone.send_append_entries(peer_id, request).await {
                     Ok(response) => {
                         if response.success {
                             state_clone.set_match_index(peer_id, response.match_index);
@@ -436,10 +452,7 @@ impl RaftNode {
         Ok(())
     }
 
-    pub async fn handle_append_entries(
-        &self,
-        req: AppendEntriesRequest,
-    ) -> AppendEntriesResponse {
+    pub async fn handle_append_entries(&self, req: AppendEntriesRequest) -> AppendEntriesResponse {
         let current_term = self.state.term();
 
         // Reply false if term < currentTerm
@@ -456,12 +469,14 @@ impl RaftNode {
         // If term > currentTerm, become follower
         if req.term > current_term {
             self.state.become_follower(req.term);
-            *self.election_timer.lock().unwrap() = Some(Instant::now() + Self::random_election_timeout_static(&self.config));
+            *self.election_timer.lock().unwrap() =
+                Some(Instant::now() + Self::random_election_timeout_static(&self.config));
         }
 
         // Set leader_id
         self.state.set_leader_id(req.leader_id);
-        *self.election_timer.lock().unwrap() = Some(Instant::now() + Self::random_election_timeout_static(&self.config));
+        *self.election_timer.lock().unwrap() =
+            Some(Instant::now() + Self::random_election_timeout_static(&self.config));
 
         // Check if we have the prev_log_entry
         if !self.log.has_entry(req.prev_log_index, req.prev_log_term) {
@@ -531,10 +546,7 @@ impl RaftNode {
         }
     }
 
-    pub async fn handle_request_vote(
-        &self,
-        req: RequestVoteRequest,
-    ) -> RequestVoteResponse {
+    pub async fn handle_request_vote(&self, req: RequestVoteRequest) -> RequestVoteResponse {
         let current_term = self.state.term();
 
         // Reply false if term < currentTerm
@@ -565,7 +577,8 @@ impl RaftNode {
 
         if vote_granted && !req.pre_vote {
             self.state.vote_for(req.candidate_id);
-            *self.election_timer.lock().unwrap() = Some(Instant::now() + Self::random_election_timeout_static(&self.config));
+            *self.election_timer.lock().unwrap() =
+                Some(Instant::now() + Self::random_election_timeout_static(&self.config));
         }
 
         RequestVoteResponse {
@@ -581,9 +594,7 @@ impl RaftNode {
         let current_term = self.state.term();
 
         if req.term < current_term {
-            return InstallSnapshotResponse {
-                term: current_term,
-            };
+            return InstallSnapshotResponse { term: current_term };
         }
 
         if req.term > current_term {
@@ -591,7 +602,8 @@ impl RaftNode {
         }
 
         self.state.set_leader_id(req.leader_id);
-        *self.election_timer.lock().unwrap() = Some(Instant::now() + Self::random_election_timeout_static(&self.config));
+        *self.election_timer.lock().unwrap() =
+            Some(Instant::now() + Self::random_election_timeout_static(&self.config));
 
         // In a real implementation, we'd stream the snapshot data
         if req.done {
@@ -600,9 +612,7 @@ impl RaftNode {
                 .save_snapshot(req.last_included_index, req.last_included_term);
         }
 
-        InstallSnapshotResponse {
-            term: current_term,
-        }
+        InstallSnapshotResponse { term: current_term }
     }
 
     pub async fn propose(&self, data: Vec<u8>) -> RaftResult<()> {
@@ -641,16 +651,12 @@ impl RaftNode {
     async fn trigger_snapshot(&self) -> RaftResult<()> {
         // In a real implementation, this would save a snapshot to disk
         // For now, just truncate the log
-        let snapshot_index = self.log.last_index().saturating_sub(
-            self.config.snapshot_threshold / 2,
-        );
+        let snapshot_index = self
+            .log
+            .last_index()
+            .saturating_sub(self.config.snapshot_threshold / 2);
         if snapshot_index > self.log.snapshot_index() {
-            let snapshot_term = self
-                .log
-                .term_at(snapshot_index)
-                .ok()
-                .flatten()
-                .unwrap_or(0);
+            let snapshot_term = self.log.term_at(snapshot_index).ok().flatten().unwrap_or(0);
             self.log.save_snapshot(snapshot_index, snapshot_term)?;
             self.log.truncate_before(snapshot_index + 1)?;
         }
@@ -740,7 +746,9 @@ impl RaftNode {
             entry_type: crate::raft::log::EntryType::Normal,
         };
 
-        self.log.append(&[entry]).map_err(|e| RaftError::LogError(format!("{}", e)))?;
+        self.log
+            .append(&[entry])
+            .map_err(|e| RaftError::LogError(format!("{}", e)))?;
         Ok(())
     }
 

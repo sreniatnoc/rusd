@@ -1,8 +1,8 @@
+use super::{LogEntry, RaftError, Result as RaftResult};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use super::{Result as RaftResult, RaftError, LogEntry};
 use tokio::sync::RwLock;
 use tracing::{debug, warn};
 
@@ -83,7 +83,14 @@ pub struct GrpcTransport {
     peer_addresses: Arc<RwLock<HashMap<u64, String>>>,
     client_timeout: std::time::Duration,
     /// Cached gRPC client connections to peers
-    clients: Arc<RwLock<HashMap<u64, crate::raftpb::raft_internal_client::RaftInternalClient<tonic::transport::Channel>>>>,
+    clients: Arc<
+        RwLock<
+            HashMap<
+                u64,
+                crate::raftpb::raft_internal_client::RaftInternalClient<tonic::transport::Channel>,
+            >,
+        >,
+    >,
     /// Optional TLS config for peer connections
     tls_config: Option<tonic::transport::ClientTlsConfig>,
 }
@@ -99,7 +106,10 @@ impl GrpcTransport {
     }
 
     /// Create a new GrpcTransport with TLS enabled for peer connections.
-    pub fn with_tls(peer_addresses: HashMap<u64, String>, tls_config: tonic::transport::ClientTlsConfig) -> Self {
+    pub fn with_tls(
+        peer_addresses: HashMap<u64, String>,
+        tls_config: tonic::transport::ClientTlsConfig,
+    ) -> Self {
         Self {
             peer_addresses: Arc::new(RwLock::new(peer_addresses)),
             client_timeout: std::time::Duration::from_secs(5),
@@ -125,13 +135,16 @@ impl GrpcTransport {
             .await
             .get(&peer_id)
             .cloned()
-            .ok_or_else(|| {
-                RaftError::TransportError(format!("Peer {} not found", peer_id))
-            })
+            .ok_or_else(|| RaftError::TransportError(format!("Peer {} not found", peer_id)))
     }
 
     /// Get or create a gRPC client for a peer
-    async fn get_client(&self, peer_id: u64) -> RaftResult<crate::raftpb::raft_internal_client::RaftInternalClient<tonic::transport::Channel>> {
+    async fn get_client(
+        &self,
+        peer_id: u64,
+    ) -> RaftResult<
+        crate::raftpb::raft_internal_client::RaftInternalClient<tonic::transport::Channel>,
+    > {
         // Check cache first
         {
             let clients = self.clients.read().await;
@@ -149,12 +162,14 @@ impl GrpcTransport {
 
         // Apply TLS config if available
         if let Some(tls) = &self.tls_config {
-            endpoint = endpoint.tls_config(tls.clone())
-                .map_err(|e| RaftError::TransportError(format!("TLS config error for peer {}: {}", peer_id, e)))?;
+            endpoint = endpoint.tls_config(tls.clone()).map_err(|e| {
+                RaftError::TransportError(format!("TLS config error for peer {}: {}", peer_id, e))
+            })?;
         }
 
-        let channel = endpoint.connect().await
-            .map_err(|e| RaftError::TransportError(format!("Failed to connect to peer {}: {}", peer_id, e)))?;
+        let channel = endpoint.connect().await.map_err(|e| {
+            RaftError::TransportError(format!("Failed to connect to peer {}: {}", peer_id, e))
+        })?;
 
         let client = crate::raftpb::raft_internal_client::RaftInternalClient::new(channel);
 
@@ -187,7 +202,9 @@ fn from_proto_entry(entry: &crate::raftpb::LogEntry) -> LogEntry {
         term: entry.term,
         data: entry.data.clone(),
         entry_type: match entry.entry_type {
-            x if x == crate::raftpb::EntryType::ConfigChange as i32 => crate::raft::EntryType::ConfigChange,
+            x if x == crate::raftpb::EntryType::ConfigChange as i32 => {
+                crate::raft::EntryType::ConfigChange
+            }
             x if x == crate::raftpb::EntryType::Snapshot as i32 => crate::raft::EntryType::Snapshot,
             _ => crate::raft::EntryType::Normal,
         },
@@ -212,13 +229,14 @@ impl RaftTransport for GrpcTransport {
             leader_commit: req.leader_commit,
         };
 
-        let response = client.append_entries(proto_req).await
-            .map_err(|e| {
-                // Remove cached client on error so it reconnects
-                let clients = self.clients.clone();
-                tokio::spawn(async move { clients.write().await.remove(&target); });
-                RaftError::TransportError(format!("AppendEntries to peer {} failed: {}", target, e))
-            })?;
+        let response = client.append_entries(proto_req).await.map_err(|e| {
+            // Remove cached client on error so it reconnects
+            let clients = self.clients.clone();
+            tokio::spawn(async move {
+                clients.write().await.remove(&target);
+            });
+            RaftError::TransportError(format!("AppendEntries to peer {} failed: {}", target, e))
+        })?;
 
         let resp = response.into_inner();
         Ok(AppendEntriesResponse {
@@ -245,12 +263,13 @@ impl RaftTransport for GrpcTransport {
             pre_vote: req.pre_vote,
         };
 
-        let response = client.request_vote(proto_req).await
-            .map_err(|e| {
-                let clients = self.clients.clone();
-                tokio::spawn(async move { clients.write().await.remove(&target); });
-                RaftError::TransportError(format!("RequestVote to peer {} failed: {}", target, e))
-            })?;
+        let response = client.request_vote(proto_req).await.map_err(|e| {
+            let clients = self.clients.clone();
+            tokio::spawn(async move {
+                clients.write().await.remove(&target);
+            });
+            RaftError::TransportError(format!("RequestVote to peer {} failed: {}", target, e))
+        })?;
 
         let resp = response.into_inner();
         Ok(RequestVoteResponse {
@@ -278,12 +297,13 @@ impl RaftTransport for GrpcTransport {
         };
 
         let stream = tokio_stream::once(chunk);
-        let response = client.install_snapshot(stream).await
-            .map_err(|e| {
-                let clients = self.clients.clone();
-                tokio::spawn(async move { clients.write().await.remove(&target); });
-                RaftError::TransportError(format!("InstallSnapshot to peer {} failed: {}", target, e))
-            })?;
+        let response = client.install_snapshot(stream).await.map_err(|e| {
+            let clients = self.clients.clone();
+            tokio::spawn(async move {
+                clients.write().await.remove(&target);
+            });
+            RaftError::TransportError(format!("InstallSnapshot to peer {} failed: {}", target, e))
+        })?;
 
         let resp = response.into_inner();
         Ok(InstallSnapshotResponse { term: resp.term })

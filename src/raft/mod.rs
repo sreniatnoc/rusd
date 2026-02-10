@@ -1,17 +1,17 @@
 pub mod config;
-pub mod state;
 pub mod log;
-pub mod transport;
 pub mod node;
+pub mod state;
+pub mod transport;
 
-pub use config::{RaftConfig, PeerConfig};
-pub use state::{RaftState, RaftRole};
-pub use log::{RaftLog, LogEntry, EntryType};
-pub use transport::{
-    RaftTransport, AppendEntriesRequest, AppendEntriesResponse, RequestVoteRequest,
-    RequestVoteResponse, InstallSnapshotRequest, InstallSnapshotResponse, GrpcTransport,
-};
+pub use config::{PeerConfig, RaftConfig};
+pub use log::{EntryType, LogEntry, RaftLog};
 pub use node::RaftNode;
+pub use state::{RaftRole, RaftState};
+pub use transport::{
+    AppendEntriesRequest, AppendEntriesResponse, GrpcTransport, InstallSnapshotRequest,
+    InstallSnapshotResponse, RaftTransport, RequestVoteRequest, RequestVoteResponse,
+};
 
 #[derive(Debug, Clone)]
 pub enum RaftMessage {

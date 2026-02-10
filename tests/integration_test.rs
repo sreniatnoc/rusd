@@ -6,23 +6,14 @@ use tempfile::TempDir;
 use tokio::time::sleep;
 
 use rusd::etcdserverpb::{
-    kv_client::KvClient,
-    watch_client::WatchClient,
-    lease_client::LeaseClient,
-    cluster_client::ClusterClient,
-    maintenance_client::MaintenanceClient,
-    auth_client::AuthClient,
-    PutRequest, RangeRequest, DeleteRangeRequest,
-    TxnRequest, Compare, RequestOp,
-    CompactionRequest,
-    WatchRequest, WatchCreateRequest,
-    LeaseGrantRequest, LeaseRevokeRequest,
-    MemberListRequest,
-    StatusRequest,
-    AuthEnableRequest, AuthDisableRequest,
-    compare, request_op, watch_request,
+    auth_client::AuthClient, cluster_client::ClusterClient, compare, kv_client::KvClient,
+    lease_client::LeaseClient, maintenance_client::MaintenanceClient, request_op,
+    watch_client::WatchClient, watch_request, AuthDisableRequest, AuthEnableRequest,
+    CompactionRequest, Compare, DeleteRangeRequest, LeaseGrantRequest, LeaseRevokeRequest,
+    MemberListRequest, PutRequest, RangeRequest, RequestOp, StatusRequest, TxnRequest,
+    WatchCreateRequest, WatchRequest,
 };
-use rusd::server::{RusdServer, ServerConfig, ClusterState};
+use rusd::server::{ClusterState, RusdServer, ServerConfig};
 
 /// Allocate a random available port by binding to port 0 and reading
 /// the OS-assigned port number.
@@ -97,7 +88,10 @@ async fn test_put_and_get() {
         .await
         .expect("put failed");
 
-    assert!(put_resp.get_ref().header.is_some(), "Put response should contain a header");
+    assert!(
+        put_resp.get_ref().header.is_some(),
+        "Put response should contain a header"
+    );
 
     // Get the key back via Range
     let range_resp = kv
@@ -208,7 +202,10 @@ async fn test_transaction() {
         .await
         .expect("txn failed");
 
-    assert!(txn_resp.get_ref().succeeded, "Transaction compare should have succeeded");
+    assert!(
+        txn_resp.get_ref().succeeded,
+        "Transaction compare should have succeeded"
+    );
 
     // Verify the value was updated
     let range_resp = kv
@@ -260,10 +257,15 @@ async fn test_watch() {
         .expect("timeout waiting for watch created")
         .expect("stream error")
         .expect("stream ended");
-    assert!(created_msg.created, "First message should be a created confirmation");
+    assert!(
+        created_msg.created,
+        "First message should be a created confirmation"
+    );
 
     // Now put a key that the watcher is monitoring
-    let mut kv = KvClient::connect(endpoint).await.expect("kv connect failed");
+    let mut kv = KvClient::connect(endpoint)
+        .await
+        .expect("kv connect failed");
     kv.put(PutRequest {
         key: b"watch/key".to_vec(),
         value: b"watched".to_vec(),
@@ -295,14 +297,13 @@ async fn test_lease_lifecycle() {
     let mut lease = LeaseClient::connect(endpoint.clone())
         .await
         .expect("lease connect failed");
-    let mut kv = KvClient::connect(endpoint).await.expect("kv connect failed");
+    let mut kv = KvClient::connect(endpoint)
+        .await
+        .expect("kv connect failed");
 
     // Grant a lease with a 100-second TTL
     let grant_resp = lease
-        .lease_grant(LeaseGrantRequest {
-            ttl: 100,
-            id: 0,
-        })
+        .lease_grant(LeaseGrantRequest { ttl: 100, id: 0 })
         .await
         .expect("lease_grant failed");
 
@@ -395,7 +396,10 @@ async fn test_compaction() {
     // nothing to compact, so we accept either Ok or a gRPC error status.
     match compact_resp {
         Ok(resp) => {
-            assert!(resp.get_ref().header.is_some(), "Compact response should have header");
+            assert!(
+                resp.get_ref().header.is_some(),
+                "Compact response should have header"
+            );
         }
         Err(status) => {
             // Acceptable -- the server may not support physical compaction yet
@@ -446,10 +450,7 @@ async fn test_status() {
         .await
         .expect("maintenance connect failed");
 
-    let resp = maint
-        .status(StatusRequest {})
-        .await
-        .expect("status failed");
+    let resp = maint.status(StatusRequest {}).await.expect("status failed");
 
     let status = resp.get_ref();
     assert!(
@@ -533,8 +534,15 @@ async fn test_range_with_limit() {
         .expect("range with limit failed");
 
     let resp = range_resp.get_ref();
-    assert_eq!(resp.kvs.len(), 5, "Should return exactly 5 keys due to limit");
-    assert!(resp.more, "more flag should be true when there are additional keys");
+    assert_eq!(
+        resp.kvs.len(),
+        5,
+        "Should return exactly 5 keys due to limit"
+    );
+    assert!(
+        resp.more,
+        "more flag should be true when there are additional keys"
+    );
 
     let _ = shutdown_tx.send(());
 }
@@ -562,7 +570,11 @@ async fn test_concurrent_puts() {
     // Wait for all tasks to complete
     for task in tasks {
         let result = task.await.expect("task panicked");
-        assert!(result.is_ok(), "Concurrent put should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Concurrent put should succeed: {:?}",
+            result.err()
+        );
     }
 
     // Verify all 20 keys exist
@@ -640,7 +652,11 @@ async fn start_3node_cluster() -> (
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
         let server_handle = tokio::spawn(async move {
-            server.run(async { shutdown_rx.await.ok(); }).await
+            server
+                .run(async {
+                    shutdown_rx.await.ok();
+                })
+                .await
         });
 
         endpoints.push(format!("http://127.0.0.1:{}", client_ports[i]));
@@ -683,11 +699,13 @@ async fn test_multinode_cluster_startup() {
             .await
             .unwrap_or_else(|_| panic!("kv connect failed on node {}", i));
 
-        let result = kv.put(PutRequest {
-            key: b"multinode/leader-probe".to_vec(),
-            value: format!("from-node-{}", i).into_bytes(),
-            ..Default::default()
-        }).await;
+        let result = kv
+            .put(PutRequest {
+                key: b"multinode/leader-probe".to_vec(),
+                value: format!("from-node-{}", i).into_bytes(),
+                ..Default::default()
+            })
+            .await;
 
         match result {
             Ok(_) => {

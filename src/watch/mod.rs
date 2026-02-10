@@ -9,14 +9,14 @@
 //! - Batched event delivery to reduce per-event overhead
 //! - Efficient range-based watcher matching
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, AtomicBool, Ordering};
+use crossbeam_channel::{unbounded, Receiver, Sender};
 use dashmap::DashMap;
-use crossbeam_channel::{Sender, Receiver, unbounded};
-use tokio::sync::mpsc;
-use thiserror::Error;
-use tracing::{debug, warn, info};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::Arc;
+use thiserror::Error;
+use tokio::sync::mpsc;
+use tracing::{debug, info, warn};
 
 /// Watch-related errors.
 #[derive(Error, Debug)]
@@ -253,7 +253,12 @@ impl WatchHub {
 
     /// Notifies all matching watchers of events.
     /// Called by MvccStore after each committed write.
-    pub fn notify(&self, events: Vec<Event>, revision: i64, compact_revision: i64) -> WatchResult<()> {
+    pub fn notify(
+        &self,
+        events: Vec<Event>,
+        revision: i64,
+        compact_revision: i64,
+    ) -> WatchResult<()> {
         if events.is_empty() {
             return Ok(());
         }
@@ -388,7 +393,7 @@ mod tests {
         assert!(range.contains(b"foobar"));
         assert!(!range.contains(b"fop"));
         assert!(!range.contains(b"aaa"));
-        assert!(!range.contains(b"fon"));  // "fon" < "foo", outside range
+        assert!(!range.contains(b"fon")); // "fon" < "foo", outside range
     }
 
     #[test]

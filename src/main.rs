@@ -5,8 +5,8 @@
 
 use clap::Parser;
 use std::path::PathBuf;
+use tracing::{error, info};
 use tracing_subscriber::filter::EnvFilter;
-use tracing::{info, error};
 
 use rusd::server::{AutoCompactionMode, ClusterState, RusdServer, ServerConfig};
 
@@ -230,7 +230,10 @@ fn initialize_tracing(log_level: &str) -> anyhow::Result<()> {
 fn print_startup_banner(args: &Args) {
     let version = env!("CARGO_PKG_VERSION");
     println!("╔════════════════════════════════════════════════════════════╗");
-    println!("║           rusd v{}                                    ║", version);
+    println!(
+        "║           rusd v{}                                    ║",
+        version
+    );
     println!("║   A Rust replacement for etcd with K8s API parity        ║");
     println!("╚════════════════════════════════════════════════════════════╝");
     println!();
@@ -298,15 +301,11 @@ fn parse_urls(urls_str: &str) -> Vec<String> {
 /// Set up signal handlers for graceful shutdown (SIGTERM, SIGINT).
 fn setup_signal_handlers() -> impl std::future::Future<Output = ()> {
     async {
-        let mut sigterm = tokio::signal::unix::signal(
-            tokio::signal::unix::SignalKind::terminate(),
-        )
-        .expect("failed to install SIGTERM handler");
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler");
 
-        let mut sigint = tokio::signal::unix::signal(
-            tokio::signal::unix::SignalKind::interrupt(),
-        )
-        .expect("failed to install SIGINT handler");
+        let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+            .expect("failed to install SIGINT handler");
 
         tokio::select! {
             _ = sigterm.recv() => {
@@ -332,19 +331,13 @@ mod tests {
     #[test]
     fn test_parse_urls_multiple() {
         let urls = parse_urls("http://localhost:2379,http://localhost:2380");
-        assert_eq!(
-            urls,
-            vec!["http://localhost:2379", "http://localhost:2380"]
-        );
+        assert_eq!(urls, vec!["http://localhost:2379", "http://localhost:2380"]);
     }
 
     #[test]
     fn test_parse_urls_with_whitespace() {
         let urls = parse_urls("http://localhost:2379 , http://localhost:2380");
-        assert_eq!(
-            urls,
-            vec!["http://localhost:2379", "http://localhost:2380"]
-        );
+        assert_eq!(urls, vec!["http://localhost:2379", "http://localhost:2380"]);
     }
 
     #[test]

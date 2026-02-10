@@ -1,8 +1,8 @@
-use tonic::{Request, Response, Status, Code};
 use std::sync::Arc;
+use tonic::{Code, Request, Response, Status};
 
-use crate::etcdserverpb::*;
 use crate::etcdserverpb::cluster_server::Cluster;
+use crate::etcdserverpb::*;
 use crate::raft::node::RaftNode;
 
 pub struct ClusterService {
@@ -35,10 +35,7 @@ impl Cluster for ClusterService {
 
         // Check if leader
         if !self.raft.is_leader() {
-            return Err(Status::new(
-                Code::FailedPrecondition,
-                "not a leader",
-            ));
+            return Err(Status::new(Code::FailedPrecondition, "not a leader"));
         }
 
         // TODO: Validate peer_urls from proto
@@ -54,7 +51,8 @@ impl Cluster for ClusterService {
         // Propose configuration change to Raft
         let add_cmd = format!("ADD_MEMBER:{}", member_id);
 
-        self.raft.propose_conf_change(add_cmd.into_bytes())
+        self.raft
+            .propose_conf_change(add_cmd.into_bytes())
             .await
             .map_err(|e| Status::new(Code::Internal, format!("conf change failed: {}", e)))?;
 
@@ -91,16 +89,14 @@ impl Cluster for ClusterService {
 
         // Check if leader
         if !self.raft.is_leader() {
-            return Err(Status::new(
-                Code::FailedPrecondition,
-                "not a leader",
-            ));
+            return Err(Status::new(Code::FailedPrecondition, "not a leader"));
         }
 
         // Propose configuration change to Raft
         let remove_cmd = format!("REMOVE_MEMBER:{}", req.id);
 
-        self.raft.propose_conf_change(remove_cmd.into_bytes())
+        self.raft
+            .propose_conf_change(remove_cmd.into_bytes())
             .await
             .map_err(|e| Status::new(Code::Internal, format!("conf change failed: {}", e)))?;
 
@@ -136,10 +132,7 @@ impl Cluster for ClusterService {
 
         // Check if leader
         if !self.raft.is_leader() {
-            return Err(Status::new(
-                Code::FailedPrecondition,
-                "not a leader",
-            ));
+            return Err(Status::new(Code::FailedPrecondition, "not a leader"));
         }
 
         // Find and update member (if it exists)
@@ -149,17 +142,15 @@ impl Cluster for ClusterService {
                 // TODO: Update member client URLs from proto if field exists
                 // member.client_urls = req.client_urls.clone();
             } else {
-                return Err(Status::new(
-                    Code::NotFound,
-                    "member not found",
-                ));
+                return Err(Status::new(Code::NotFound, "member not found"));
             }
         }
 
         // Propose configuration change to Raft
         let update_cmd = format!("UPDATE_MEMBER:{}", req.id);
 
-        self.raft.propose_conf_change(update_cmd.into_bytes())
+        self.raft
+            .propose_conf_change(update_cmd.into_bytes())
             .await
             .map_err(|e| Status::new(Code::Internal, format!("conf change failed: {}", e)))?;
 
@@ -203,10 +194,7 @@ impl Cluster for ClusterService {
 
         // Check if leader
         if !self.raft.is_leader() {
-            return Err(Status::new(
-                Code::FailedPrecondition,
-                "not a leader",
-            ));
+            return Err(Status::new(Code::FailedPrecondition, "not a leader"));
         }
 
         // Find and promote member
@@ -222,17 +210,15 @@ impl Cluster for ClusterService {
                     ));
                 }
             } else {
-                return Err(Status::new(
-                    Code::NotFound,
-                    "member not found",
-                ));
+                return Err(Status::new(Code::NotFound, "member not found"));
             }
         }
 
         // Propose configuration change to Raft
         let promote_cmd = format!("PROMOTE_MEMBER:{}", req.id);
 
-        self.raft.propose_conf_change(promote_cmd.into_bytes())
+        self.raft
+            .propose_conf_change(promote_cmd.into_bytes())
             .await
             .map_err(|e| Status::new(Code::Internal, format!("conf change failed: {}", e)))?;
 

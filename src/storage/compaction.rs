@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::time::{sleep, interval};
+use tokio::time::{interval, sleep};
 use tracing::{debug, info, warn};
 
 use crate::storage::MvccStore;
@@ -39,11 +39,7 @@ pub struct Compactor {
 
 impl Compactor {
     /// Creates a new compactor.
-    pub fn new(
-        store: Arc<MvccStore>,
-        mode: CompactionMode,
-        retention_period: Duration,
-    ) -> Self {
+    pub fn new(store: Arc<MvccStore>, mode: CompactionMode, retention_period: Duration) -> Self {
         Self {
             store,
             mode,
@@ -147,8 +143,8 @@ impl Compactor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
     use crate::storage::{Backend, BackendConfig};
+    use tempfile::TempDir;
 
     #[tokio::test]
     async fn test_compactor_creation() {

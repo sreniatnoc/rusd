@@ -6,8 +6,8 @@ use crate::raft::node::RaftNode;
 use crate::raft::transport as raft_transport;
 use crate::raftpb::raft_internal_server::RaftInternal;
 use crate::raftpb::{
-    AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotChunk,
-    InstallSnapshotResponse, RequestVoteRequest, RequestVoteResponse,
+    AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotChunk, InstallSnapshotResponse,
+    RequestVoteRequest, RequestVoteResponse,
 };
 
 /// gRPC service that handles incoming Raft peer RPCs.
@@ -102,15 +102,16 @@ impl RaftInternal for RaftInternalService {
         let mut last_chunk = None;
         let mut all_data = Vec::new();
 
-        while let Some(chunk) = stream.message().await.map_err(|e| {
-            Status::internal(format!("Failed to receive snapshot chunk: {}", e))
-        })? {
+        while let Some(chunk) = stream
+            .message()
+            .await
+            .map_err(|e| Status::internal(format!("Failed to receive snapshot chunk: {}", e)))?
+        {
             all_data.extend_from_slice(&chunk.data);
             last_chunk = Some(chunk);
         }
 
-        let chunk = last_chunk
-            .ok_or_else(|| Status::invalid_argument("Empty snapshot stream"))?;
+        let chunk = last_chunk.ok_or_else(|| Status::invalid_argument("Empty snapshot stream"))?;
 
         let internal_req = raft_transport::InstallSnapshotRequest {
             term: chunk.term,

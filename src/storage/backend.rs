@@ -407,9 +407,15 @@ impl Backend {
 
         if count > 0 {
             self.kv_rev_tree.apply_batch(batch)?;
-            info!("Compacted {} revision entries below revision {}", count, revision);
+            info!(
+                "Compacted {} revision entries below revision {}",
+                count, revision
+            );
         } else {
-            debug!("Compact requested at revision {} (nothing to remove)", revision);
+            debug!(
+                "Compact requested at revision {} (nothing to remove)",
+                revision
+            );
         }
 
         Ok(())
@@ -500,9 +506,18 @@ mod tests {
 
         backend.batch_put("kv", &pairs).unwrap();
 
-        assert_eq!(backend.get("kv", b"key1").unwrap(), Some(b"value1".to_vec()));
-        assert_eq!(backend.get("kv", b"key2").unwrap(), Some(b"value2".to_vec()));
-        assert_eq!(backend.get("kv", b"key3").unwrap(), Some(b"value3".to_vec()));
+        assert_eq!(
+            backend.get("kv", b"key1").unwrap(),
+            Some(b"value1".to_vec())
+        );
+        assert_eq!(
+            backend.get("kv", b"key2").unwrap(),
+            Some(b"value2".to_vec())
+        );
+        assert_eq!(
+            backend.get("kv", b"key3").unwrap(),
+            Some(b"value3".to_vec())
+        );
     }
 
     #[test]

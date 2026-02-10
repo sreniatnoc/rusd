@@ -6,14 +6,14 @@
 //! - Atomic lease ID assignment
 //! - Efficient attach/detach of keys to leases
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, Ordering};
-use std::collections::{HashMap, BinaryHeap, HashSet};
-use std::cmp::Reverse;
-use std::time::{Duration, Instant, SystemTime};
 use parking_lot::RwLock;
-use tokio::sync::mpsc;
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime};
 use thiserror::Error;
+use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 /// Lease-related errors.
@@ -41,8 +41,8 @@ pub type LeaseResult<T> = Result<T, LeaseError>;
 #[derive(Clone, Debug)]
 pub struct Lease {
     pub id: i64,
-    pub ttl: i64,              // Granted TTL in seconds
-    pub granted_ttl: i64,      // Original granted TTL
+    pub ttl: i64,         // Granted TTL in seconds
+    pub granted_ttl: i64, // Original granted TTL
     pub created_at: Instant,
     pub keys: Vec<Vec<u8>>,
 }
@@ -224,9 +224,7 @@ impl LeaseManager {
             debug!(lease_id, "Key attached to lease");
             Ok(())
         } else {
-            Err(LeaseError::Internal(
-                "Lease keys map corrupted".to_string(),
-            ))
+            Err(LeaseError::Internal("Lease keys map corrupted".to_string()))
         }
     }
 
@@ -337,10 +335,7 @@ impl LeaseManager {
                                             .map(|set| set.into_iter().collect::<Vec<_>>())
                                             .unwrap_or_default();
 
-                                        Some(LeaseExpireEvent {
-                                            lease_id,
-                                            keys,
-                                        })
+                                        Some(LeaseExpireEvent { lease_id, keys })
                                     } else {
                                         None
                                     }
@@ -447,12 +442,7 @@ mod tests {
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Check if expiry event was sent
-        if let Ok(Some(event)) = tokio::time::timeout(
-            Duration::from_secs(1),
-            rx.recv(),
-        )
-        .await
-        {
+        if let Ok(Some(event)) = tokio::time::timeout(Duration::from_secs(1), rx.recv()).await {
             assert_eq!(event.lease_id, lease.id);
             assert_eq!(event.keys.len(), 1);
         }

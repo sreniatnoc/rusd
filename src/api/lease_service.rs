@@ -1,11 +1,11 @@
-use tonic::{Request, Response, Status, Code};
 use std::sync::Arc;
-use tokio_stream::wrappers::ReceiverStream;
 use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
+use tonic::{Code, Request, Response, Status};
 use tracing::{debug, error, info};
 
-use crate::etcdserverpb::*;
 use crate::etcdserverpb::lease_server::Lease as LeaseTrait;
+use crate::etcdserverpb::*;
 use crate::raft::node::RaftNode;
 use crate::storage::mvcc::MvccStore;
 use crate::watch::WatchHub;
@@ -26,7 +26,12 @@ impl ApiLeaseManager {
         store: Arc<MvccStore>,
         watch_hub: Arc<WatchHub>,
     ) -> Self {
-        Self { raft, core, store, watch_hub }
+        Self {
+            raft,
+            core,
+            store,
+            watch_hub,
+        }
     }
 
     pub fn build_response_header(&self) -> ResponseHeader {
@@ -61,18 +66,12 @@ impl LeaseTrait for LeaseService {
 
         // Validate input
         if req.ttl <= 0 {
-            return Err(Status::new(
-                Code::InvalidArgument,
-                "ttl must be positive",
-            ));
+            return Err(Status::new(Code::InvalidArgument, "ttl must be positive"));
         }
 
         // Check if leader
         if !self.api_lease_mgr.raft.is_leader() {
-            return Err(Status::new(
-                Code::FailedPrecondition,
-                "not a leader",
-            ));
+            return Err(Status::new(Code::FailedPrecondition, "not a leader"));
         }
 
         // Generate lease ID
@@ -81,12 +80,16 @@ impl LeaseTrait for LeaseService {
         // Propose to Raft
         let grant_cmd = format!("GRANT_LEASE:{},{}", lease_id, req.ttl);
 
-        self.api_lease_mgr.raft.propose(grant_cmd.into_bytes())
+        self.api_lease_mgr
+            .raft
+            .propose(grant_cmd.into_bytes())
             .await
             .map_err(|e| Status::new(Code::Internal, format!("raft proposal failed: {}", e)))?;
 
         // Grant the lease in the core lease manager
-        self.api_lease_mgr.core.grant(lease_id, req.ttl)
+        self.api_lease_mgr
+            .core
+            .grant(lease_id, req.ttl)
             .map_err(|e| Status::new(Code::Internal, format!("lease grant failed: {}", e)))?;
 
         let response = LeaseGrantResponse {
@@ -114,21 +117,23 @@ impl LeaseTrait for LeaseService {
 
         // Check if leader
         if !self.api_lease_mgr.raft.is_leader() {
-            return Err(Status::new(
-                Code::FailedPrecondition,
-                "not a leader",
-            ));
+            return Err(Status::new(Code::FailedPrecondition, "not a leader"));
         }
 
         // Propose to Raft
         let revoke_cmd = format!("REVOKE_LEASE:{}", req.id);
 
-        self.api_lease_mgr.raft.propose(revoke_cmd.into_bytes())
+        self.api_lease_mgr
+            .raft
+            .propose(revoke_cmd.into_bytes())
             .await
             .map_err(|e| Status::new(Code::Internal, format!("raft proposal failed: {}", e)))?;
 
         // Revoke the lease in the core lease manager (returns attached keys)
-        let keys = self.api_lease_mgr.core.revoke(req.id)
+        let keys = self
+            .api_lease_mgr
+            .core
+            .revoke(req.id)
             .map_err(|e| Status::new(Code::Internal, format!("lease revoke failed: {}", e)))?;
 
         // Delete all attached keys from storage
@@ -153,7 +158,10 @@ impl LeaseTrait for LeaseService {
                             },
                             prev_kv: None,
                         };
-                        let _ = self.api_lease_mgr.watch_hub.notify(vec![delete_event], rev, 0);
+                        let _ = self
+                            .api_lease_mgr
+                            .watch_hub
+                            .notify(vec![delete_event], rev, 0);
                     }
                     debug!(key = ?String::from_utf8_lossy(key), "Deleted key on lease revoke");
                 }
@@ -163,7 +171,11 @@ impl LeaseTrait for LeaseService {
             }
         }
 
-        info!(lease_id = req.id, deleted_keys = keys.len(), "Lease revoked with key cleanup");
+        info!(
+            lease_id = req.id,
+            deleted_keys = keys.len(),
+            "Lease revoked with key cleanup"
+        );
 
         let response = LeaseRevokeResponse {
             header: Some(self.api_lease_mgr.build_response_header()),
@@ -183,10 +195,12 @@ impl LeaseTrait for LeaseService {
         tokio::spawn(async move {
             while let Ok(Some(keep_alive_req)) = stream.message().await {
                 if keep_alive_req.id == 0 {
-                    let _ = tx.send(Err(Status::new(
-                        Code::InvalidArgument,
-                        "lease id must not be zero",
-                    ))).await;
+                    let _ = tx
+                        .send(Err(Status::new(
+                            Code::InvalidArgument,
+                            "lease id must not be zero",
+                        )))
+                        .await;
                     continue;
                 }
 
@@ -196,8 +210,7 @@ impl LeaseTrait for LeaseService {
                 match api_lease_mgr.raft.propose(keepalive_cmd.into_bytes()).await {
                     Ok(_) => {
                         // Get the renewed TTL from the lease manager
-                        let ttl = api_lease_mgr.core.renew(keep_alive_req.id)
-                            .unwrap_or(0);
+                        let ttl = api_lease_mgr.core.renew(keep_alive_req.id).unwrap_or(0);
 
                         let response = LeaseKeepAliveResponse {
                             header: Some(api_lease_mgr.build_response_header()),
@@ -210,10 +223,12 @@ impl LeaseTrait for LeaseService {
                         }
                     }
                     Err(e) => {
-                        let _ = tx.send(Err(Status::new(
-                            Code::Internal,
-                            format!("keepalive failed: {}", e),
-                        ))).await;
+                        let _ = tx
+                            .send(Err(Status::new(
+                                Code::Internal,
+                                format!("keepalive failed: {}", e),
+                            )))
+                            .await;
                     }
                 }
             }
@@ -247,12 +262,10 @@ impl LeaseTrait for LeaseService {
                 };
                 Ok(Response::new(response))
             }
-            Err(e) => {
-                Err(Status::new(
-                    Code::NotFound,
-                    format!("lease not found: {}", e),
-                ))
-            }
+            Err(e) => Err(Status::new(
+                Code::NotFound,
+                format!("lease not found: {}", e),
+            )),
         }
     }
 
@@ -261,11 +274,12 @@ impl LeaseTrait for LeaseService {
         request: Request<LeaseLeasesRequest>,
     ) -> Result<Response<LeaseLeasesResponse>, Status> {
         // Fetch all active leases from the lease manager
-        let leases = self.api_lease_mgr.core.list()
+        let leases = self
+            .api_lease_mgr
+            .core
+            .list()
             .into_iter()
-            .map(|lease| LeaseLeases {
-                id: lease.id,
-            })
+            .map(|lease| LeaseLeases { id: lease.id })
             .collect();
 
         let response = LeaseLeasesResponse {

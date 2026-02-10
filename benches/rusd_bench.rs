@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId, Throughput};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use std::time::Duration;
 
 // Mock client for benchmarking (in real scenario, would use actual gRPC client)
@@ -70,17 +70,13 @@ fn bench_put(c: &mut Criterion) {
     for size in [10, 100, 1000, 10000].iter() {
         group.throughput(Throughput::Bytes(*size as u64));
         let value = black_box("x".repeat(*size));
-        group.bench_with_input(
-            BenchmarkId::new("put_value_size", size),
-            size,
-            |b, _| {
-                let mut counter = 0;
-                b.iter(|| {
-                    counter += 1;
-                    client.put(&format!("test/key{}", counter), &value)
-                })
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("put_value_size", size), size, |b, _| {
+            let mut counter = 0;
+            b.iter(|| {
+                counter += 1;
+                client.put(&format!("test/key{}", counter), &value)
+            })
+        });
     }
 
     // Sequential puts
@@ -119,9 +115,7 @@ fn bench_get(c: &mut Criterion) {
     let client = black_box(MockClient::new("http://localhost:2379"));
 
     // Single get operation
-    group.bench_function("single_get", |b| {
-        b.iter(|| client.get("test/key1"))
-    });
+    group.bench_function("single_get", |b| b.iter(|| client.get("test/key1")));
 
     // Sequential gets
     group.bench_function("sequential_gets_100", |b| {
@@ -167,21 +161,27 @@ fn bench_range_scan(c: &mut Criterion) {
 
     // Small range scans
     group.throughput(Throughput::Elements(10));
-    group.bench_with_input(BenchmarkId::new("range_small", "10_items"), &10u32, |b, &limit| {
-        b.iter(|| client.range("test/", limit))
-    });
+    group.bench_with_input(
+        BenchmarkId::new("range_small", "10_items"),
+        &10u32,
+        |b, &limit| b.iter(|| client.range("test/", limit)),
+    );
 
     // Medium range scans
     group.throughput(Throughput::Elements(100));
-    group.bench_with_input(BenchmarkId::new("range_medium", "100_items"), &100u32, |b, &limit| {
-        b.iter(|| client.range("test/", limit))
-    });
+    group.bench_with_input(
+        BenchmarkId::new("range_medium", "100_items"),
+        &100u32,
+        |b, &limit| b.iter(|| client.range("test/", limit)),
+    );
 
     // Large range scans
     group.throughput(Throughput::Elements(1000));
-    group.bench_with_input(BenchmarkId::new("range_large", "1000_items"), &1000u32, |b, &limit| {
-        b.iter(|| client.range("test/", limit))
-    });
+    group.bench_with_input(
+        BenchmarkId::new("range_large", "1000_items"),
+        &1000u32,
+        |b, &limit| b.iter(|| client.range("test/", limit)),
+    );
 
     // Range scan with different prefixes
     for prefix_depth in [1, 2, 3, 4].iter() {
@@ -243,7 +243,7 @@ fn bench_txn(c: &mut Criterion) {
                     "expected_value",
                     "new_value",
                 )
-            };
+            }
         })
     });
 
@@ -267,11 +267,7 @@ fn bench_txn(c: &mut Criterion) {
     group.bench_function("sequential_txn_100", |b| {
         b.iter(|| {
             for i in 0..100 {
-                client.txn(
-                    &format!("txn/key{}", i),
-                    "expected_value",
-                    "new_value",
-                )
+                client.txn(&format!("txn/key{}", i), "expected_value", "new_value")
             }
         })
     });
