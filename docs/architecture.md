@@ -8,13 +8,13 @@ rusd is a layered system with clear separation between the gRPC API surface, con
 
 ## System Overview
 
-![Architecture Overview](images/architecture-overview.png)
+![Architecture Overview]({{ site.baseurl }}/images/architecture-overview.svg)
 
 ## MVCC Dual-Write
 
 Every write operation goes through the MVCC store, which maintains two parallel storage trees:
 
-![MVCC Dual-Write Flow](images/mvcc-dual-write.png)
+![MVCC Dual-Write Flow]({{ site.baseurl }}/images/mvcc-dual-write.svg)
 
 ### kv tree (latest value, key-indexed)
 - Key: `{key}` (raw key bytes)
@@ -34,7 +34,7 @@ The compaction engine deletes entries from `kv_rev` below a specified revision. 
 
 ## Raft Consensus
 
-![Raft Consensus Protocol](images/raft-consensus.png)
+![Raft Consensus Protocol]({{ site.baseurl }}/images/raft-consensus.svg)
 
 ### Election Flow (with Pre-Vote)
 1. Election timer expires (randomized 150-300ms)

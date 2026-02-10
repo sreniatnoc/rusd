@@ -306,16 +306,65 @@ jobs:
           retention-days: 7
 
   # ============================================================================
-  # Job 4: Multi-Node Cluster Validation
+  # Job 4: TLS Validation
+  # ============================================================================
+  tls-validation:
+    name: TLS etcdctl Validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: build-and-test
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download rusd binary
+        uses: actions/download-artifact@v4
+        with:
+          name: rusd-binary
+          path: ./target/release/
+
+      - name: Make binary executable
+        run: chmod +x ./target/release/rusd
+
+      - name: Install etcdctl
+        run: |
+          ETCD_VER=v3.5.17
+          curl -L https://github.com/etcd-io/etcd/releases/download/${ETCD_VER}/etcd-${ETCD_VER}-linux-amd64.tar.gz -o /tmp/etcd.tar.gz
+          mkdir -p /tmp/etcd
+          tar xzf /tmp/etcd.tar.gz -C /tmp/etcd --strip-components=1
+          sudo cp /tmp/etcd/etcdctl /usr/local/bin/
+          etcdctl version
+
+      - name: Run TLS validation tests
+        run: |
+          chmod +x scripts/tls-test.sh
+          ./scripts/tls-test.sh
+
+      - name: Upload TLS test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tls-test-log
+          path: /tmp/rusd-tls-test.log
+          retention-days: 7
+
+      - name: Upload TLS test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tls-test-results
+          path: /tmp/tls-test-results.json
+          retention-days: 7
+
+  # ============================================================================
+  # Job 5: Multi-Node Cluster Validation
   # ============================================================================
   multi-node-validation:
     name: Multi-Node Cluster Validation
     runs-on: ubuntu-latest
     timeout-minutes: 20
     needs: build-and-test
-    # Enable this job when multi-node Raft is implemented.
-    # Remove the 'if: false' line below to activate.
-    if: false
 
     steps:
       - name: Checkout repository
@@ -340,6 +389,7 @@ jobs:
           etcdctl version
 
       - name: Run multi-node test script
+        continue-on-error: true  # Multi-node Raft not fully stable yet; failures are informational
         run: |
           chmod +x scripts/multi-node-test.sh
           ./scripts/multi-node-test.sh
@@ -353,7 +403,7 @@ jobs:
           retention-days: 7
 
   # ============================================================================
-  # Job 5: Benchmarks
+  # Job 6: Benchmarks
   # ============================================================================
   benchmarks:
     name: Benchmarks
@@ -416,7 +466,7 @@ jobs:
           retention-days: 30
 
   # ============================================================================
-  # Job 6: Docker Build (validates Dockerfile)
+  # Job 7: Docker Build (validates Dockerfile)
   # ============================================================================
   docker-build:
     name: Docker Build
@@ -442,17 +492,15 @@ jobs:
           cache-to: type=gha,mode=max
 
   # ============================================================================
-  # Job 7: Kind Cluster K8s Validation (Optional)
+  # Job 8: Kind Cluster K8s Validation
   # ============================================================================
   k8s-validation:
     name: Kind Cluster K8s Validation
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: build-and-test
-    # This is a heavyweight test. Only run on main branch pushes.
-    # It validates rusd as a K8s etcd backend in a Kind cluster.
-    # Requires Docker and Kind.
-    if: false  # Enable when Docker-based K8s validation is ready
+    # Heavyweight test: only on pushes to main, not on every PR
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
 
     steps:
       - name: Checkout repository
@@ -466,6 +514,15 @@ jobs:
 
       - name: Make binary executable
         run: chmod +x ./target/release/rusd
+
+      - name: Install etcdctl
+        run: |
+          ETCD_VER=v3.5.17
+          curl -L https://github.com/etcd-io/etcd/releases/download/${ETCD_VER}/etcd-${ETCD_VER}-linux-amd64.tar.gz -o /tmp/etcd.tar.gz
+          mkdir -p /tmp/etcd
+          tar xzf /tmp/etcd.tar.gz -C /tmp/etcd --strip-components=1
+          sudo cp /tmp/etcd/etcdctl /usr/local/bin/
+          etcdctl version
 
       - name: Install Kind
         run: |
