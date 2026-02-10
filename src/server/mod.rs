@@ -276,9 +276,9 @@ impl RusdServer {
 
         // Build peer addresses map from initial cluster configuration
         let mut peer_addresses = std::collections::HashMap::new();
-        let peers = parse_peer_configs(&config.initial_cluster, &config.name);
+        let peers = parse_peer_configs_with_token(&config.initial_cluster, &config.name, &config.initial_cluster_token);
         for peer in &peers {
-            peer_addresses.insert(peer.id, format!("http://{}:2379", peer.id)); // TODO: Use actual peer URLs
+            peer_addresses.insert(peer.id, peer.address.clone());
         }
         // Create transport with optional TLS
         let transport = if config.peer_tls_cert_file.is_some() || config.tls_cert_file.is_some() {
@@ -306,7 +306,7 @@ impl RusdServer {
         let (apply_tx, apply_rx) = mpsc::channel(10000);
 
         // Parse peers from initial_cluster config
-        let peers = parse_peer_configs(&config.initial_cluster, &config.name);
+        let peers = parse_peer_configs_with_token(&config.initial_cluster, &config.name, &config.initial_cluster_token);
 
         let raft_config = RaftConfig {
             id: member_id,
@@ -534,10 +534,27 @@ impl RusdServer {
     }
 }
 
+/// Compute a deterministic member ID from name and cluster token.
+/// Must match the ID computation in RusdServer::new().
+fn compute_member_id(name: &str, cluster_token: &str) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    name.hash(&mut hasher);
+    cluster_token.hash(&mut hasher);
+    hasher.finish()
+}
+
 /// Parse initial cluster string into PeerConfig entries (excluding self).
+/// Uses deterministic hash-based IDs matching each node's member_id.
 fn parse_peer_configs(initial_cluster: &str, local_name: &str) -> Vec<PeerConfig> {
+    parse_peer_configs_with_token(initial_cluster, local_name, "rusd-cluster")
+}
+
+/// Parse initial cluster string with a specific cluster token for ID computation.
+fn parse_peer_configs_with_token(initial_cluster: &str, local_name: &str, cluster_token: &str) -> Vec<PeerConfig> {
     let mut peers = Vec::new();
-    for (idx, member_str) in initial_cluster.split(',').enumerate() {
+    for member_str in initial_cluster.split(',') {
         let member_str = member_str.trim();
         let parts: Vec<&str> = member_str.split('=').collect();
         if parts.len() != 2 {
@@ -554,7 +571,7 @@ fn parse_peer_configs(initial_cluster: &str, local_name: &str) -> Vec<PeerConfig
         }
 
         peers.push(PeerConfig {
-            id: (idx as u64) + 1,
+            id: compute_member_id(name, cluster_token),
             address: peer_url.to_string(),
         });
     }

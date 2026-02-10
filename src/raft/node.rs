@@ -137,7 +137,7 @@ impl RaftNode {
         self.apply_committed_entries().await?;
 
         // Check if snapshot is needed
-        let log_size = self.log.last_index() - self.log.first_index();
+        let log_size = self.log.last_index().saturating_sub(self.log.first_index());
         if log_size > self.config.snapshot_threshold {
             self.trigger_snapshot().await?;
         }
