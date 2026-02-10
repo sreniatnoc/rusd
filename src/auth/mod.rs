@@ -12,9 +12,8 @@ use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation}
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Arc;
 use thiserror::Error;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// Auth-related errors.
 #[derive(Error, Debug)]
@@ -600,7 +599,7 @@ mod tests {
         let store = AuthStore::new(None);
 
         store.role_add("reader").unwrap();
-        let mut perm = Permission {
+        let perm = Permission {
             perm_type: PermissionType::Read,
             key: b"keys/".to_vec(),
             range_end: b"keys0".to_vec(),

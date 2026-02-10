@@ -13,12 +13,12 @@
 //! 2. An in-memory index mapping keys to their revision history
 //! 3. Current and compact revision counters
 
-use crate::storage::{Backend, BackendError, KeyIndex, StorageError, StorageResult};
+use crate::storage::{Backend, KeyIndex, StorageError, StorageResult};
 use parking_lot::RwLock;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// A key-value pair with MVCC metadata.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -170,6 +170,7 @@ pub struct RangeResult {
 
 /// A write operation to be batched.
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 enum WriteOp {
     Put {
         key: Vec<u8>,
@@ -232,9 +233,9 @@ impl MvccStore {
         info!("Initializing MVCC store");
 
         // Initialize key index from sled by scanning all existing data
-        let mut index = KeyIndex::new();
-        let mut current_revision = 1i64;
-        let mut compact_revision = 0i64;
+        let index = KeyIndex::new();
+        let current_revision = 1i64;
+        let compact_revision = 0i64;
 
         // Scan all existing keys and rebuild the index
         // In a real implementation, we might store revision metadata separately
@@ -484,7 +485,7 @@ impl MvccStore {
     pub fn txn(
         &self,
         _compares: Vec<()>,
-        success_ops: Vec<()>,
+        _success_ops: Vec<()>,
         _failure_ops: Vec<()>,
     ) -> StorageResult<()> {
         // Allocate revision for the transaction
@@ -548,7 +549,7 @@ impl MvccStore {
             .scan("kv_rev", &scan_start, &scan_end, 0)
             .map_err(|e| StorageError::Backend(e))?;
 
-        for (rev_key, data) in entries {
+        for (_rev_key, data) in entries {
             if let Ok(kv) = KeyValue::decode_with_key(&data) {
                 let event_type = if kv.version == 0 && kv.value.is_empty() {
                     "Delete".to_string()
@@ -675,7 +676,7 @@ mod tests {
 
         let (rev1, _, _) = store.put(b"key1", b"value1", 0).unwrap();
         let (rev2, _, _) = store.put(b"key1", b"value2", 0).unwrap();
-        let (rev3, _, _) = store.put(b"key1", b"value3", 0).unwrap();
+        let (_rev3, _, _) = store.put(b"key1", b"value3", 0).unwrap();
 
         // Read at rev1 should return value1
         let result = store.range(b"key1", b"key2", rev1, 10, false).unwrap();
@@ -699,7 +700,7 @@ mod tests {
 
         let (rev1, _, _) = store.put(b"key1", b"value1", 0).unwrap();
         let (rev2, _, _) = store.put(b"key2", b"value2", 0).unwrap();
-        let (rev3, _, _) = store.put(b"key1", b"value1_updated", 0).unwrap();
+        let (_rev3, _, _) = store.put(b"key1", b"value1_updated", 0).unwrap();
 
         // Get events from rev2 onwards (should get key2 put and key1 update)
         let events = store.watch_events(rev2).unwrap();
@@ -719,7 +720,7 @@ mod tests {
     fn test_watch_events_delete_tombstone() {
         let store = setup_store();
 
-        let (rev1, _, _) = store.put(b"key1", b"value1", 0).unwrap();
+        let (_rev1, _, _) = store.put(b"key1", b"value1", 0).unwrap();
         let (rev2, deleted) = store.delete_range(b"key1", b"key2").unwrap();
         assert_eq!(deleted.len(), 1);
 
@@ -736,7 +737,7 @@ mod tests {
 
         let (rev1, _, _) = store.put(b"key1", b"value1", 0).unwrap();
         let (rev2, _, _) = store.put(b"key1", b"value2", 0).unwrap();
-        let (rev3, _, _) = store.put(b"key1", b"value3", 0).unwrap();
+        let (_rev3, _, _) = store.put(b"key1", b"value3", 0).unwrap();
 
         // Compact up to rev2 (should remove rev1)
         store.compact(rev2).unwrap();

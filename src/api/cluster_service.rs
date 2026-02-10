@@ -31,7 +31,7 @@ impl Cluster for ClusterService {
         &self,
         request: Request<MemberAddRequest>,
     ) -> Result<Response<MemberAddResponse>, Status> {
-        let req = request.into_inner();
+        let _req = request.into_inner();
 
         // Check if leader
         if !self.raft.is_leader() {

@@ -46,6 +46,7 @@ use crate::watch::WatchHub;
 /// Main rusd server that coordinates all subsystems.
 pub struct RusdServer {
     config: ServerConfig,
+    #[allow(dead_code)]
     backend: Arc<Backend>,
     store: Arc<MvccStore>,
     raft: Arc<RaftNode>,
@@ -386,7 +387,7 @@ impl RusdServer {
         server.background_tasks.push(apply_handle);
 
         // Start lease expiry background task
-        let lease_mgr_clone = server.lease_mgr.clone();
+        let _lease_mgr_clone = server.lease_mgr.clone();
         let store_clone = server.store.clone();
         let watch_hub_clone = server.watch_hub.clone();
         let expiry_handle = tokio::spawn(async move {
@@ -584,6 +585,7 @@ fn compute_member_id(name: &str, cluster_token: &str) -> u64 {
 
 /// Parse initial cluster string into PeerConfig entries (excluding self).
 /// Uses deterministic hash-based IDs matching each node's member_id.
+#[allow(dead_code)]
 fn parse_peer_configs(initial_cluster: &str, local_name: &str) -> Vec<PeerConfig> {
     parse_peer_configs_with_token(initial_cluster, local_name, "rusd-cluster")
 }
@@ -719,8 +721,8 @@ fn load_tls_config(
 /// Background task that processes log entries from Raft's apply channel.
 async fn process_apply_channel(
     mut apply_rx: mpsc::Receiver<crate::raft::LogEntry>,
-    store: Arc<MvccStore>,
-    watch_hub: Arc<WatchHub>,
+    _store: Arc<MvccStore>,
+    _watch_hub: Arc<WatchHub>,
 ) {
     while let Some(entry) = apply_rx.recv().await {
         match entry.entry_type {
@@ -806,6 +808,7 @@ async fn process_lease_expiries(
 }
 
 /// Background task that runs the Raft node's event loop.
+#[allow(dead_code)]
 async fn raft_event_loop(raft: Arc<RaftNode>) {
     let mut interval = tokio::time::interval(Duration::from_millis(10));
     loop {

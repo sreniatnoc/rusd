@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::time::{interval, sleep};
+use tokio::time::interval;
 use tracing::{debug, info, warn};
 
 use crate::storage::MvccStore;
@@ -34,6 +34,7 @@ pub struct Compactor {
     mode: CompactionMode,
 
     /// For periodic mode: retention period (keep revisions newer than this)
+    #[allow(dead_code)]
     retention_period: Duration,
 }
 

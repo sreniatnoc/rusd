@@ -271,7 +271,7 @@ impl LeaseTrait for LeaseService {
 
     async fn lease_leases(
         &self,
-        request: Request<LeaseLeasesRequest>,
+        _request: Request<LeaseLeasesRequest>,
     ) -> Result<Response<LeaseLeasesResponse>, Status> {
         // Fetch all active leases from the lease manager
         let leases = self

@@ -6,7 +6,6 @@ use crate::raft::transport::{
     RaftTransport, RequestVoteRequest, RequestVoteResponse,
 };
 use crate::raft::{EntryType, LogEntry, RaftError, RaftMessage, Result as RaftResult};
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::Mutex; // std::sync::Mutex guards are Send (unlike parking_lot)
 use std::time::Duration;
@@ -26,7 +25,9 @@ pub struct RaftNode {
     heartbeat_timer: Mutex<Option<Instant>>,
 
     // Message queue for incoming RPC responses
+    #[allow(dead_code)]
     message_rx: Arc<Mutex<tokio::sync::mpsc::Receiver<(u64, RaftMessage)>>>,
+    #[allow(dead_code)]
     message_tx: Arc<tokio::sync::mpsc::Sender<(u64, RaftMessage)>>,
 }
 
@@ -418,7 +419,7 @@ impl RaftNode {
 
             let transport_clone = self.transport.clone();
             let state_clone = self.state.clone();
-            let log_clone = self.log.clone();
+            let _log_clone = self.log.clone();
 
             tokio::spawn(async move {
                 match transport_clone.send_append_entries(peer_id, request).await {

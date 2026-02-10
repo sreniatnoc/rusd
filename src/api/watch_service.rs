@@ -166,7 +166,7 @@ impl Watch for WatchService {
                                                 })
                                                 .collect();
 
-                                            let is_progress = events.is_empty();
+                                            let _is_progress = events.is_empty();
 
                                             let response = WatchResponse {
                                                 header: Some(ResponseHeader {

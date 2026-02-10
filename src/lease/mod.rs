@@ -11,10 +11,10 @@ use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 use thiserror::Error;
 use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 /// Lease-related errors.
 #[derive(Error, Debug)]
@@ -169,7 +169,7 @@ impl LeaseManager {
     pub fn revoke(&self, id: i64) -> LeaseResult<Vec<Vec<u8>>> {
         let mut leases = self.leases.write();
 
-        if let Some(lease) = leases.remove(&id) {
+        if let Some(_lease) = leases.remove(&id) {
             let mut lease_keys = self.lease_keys.write();
             let keys = lease_keys
                 .remove(&id)

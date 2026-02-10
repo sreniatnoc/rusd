@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{debug, warn};
+use tracing::debug;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AppendEntriesRequest {
@@ -196,6 +196,7 @@ fn to_proto_entry(entry: &LogEntry) -> crate::raftpb::LogEntry {
 }
 
 /// Convert proto LogEntry to internal LogEntry
+#[allow(dead_code)]
 fn from_proto_entry(entry: &crate::raftpb::LogEntry) -> LogEntry {
     LogEntry {
         index: entry.index,
@@ -312,6 +313,7 @@ impl RaftTransport for GrpcTransport {
 
 // Mock transport for testing
 pub struct MockTransport {
+    #[allow(dead_code)]
     responses: Arc<RwLock<HashMap<u64, Vec<u8>>>>,
 }
 

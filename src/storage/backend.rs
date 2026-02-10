@@ -17,7 +17,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use thiserror::Error;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// Backend storage errors.
 #[derive(Error, Debug)]
@@ -94,6 +94,7 @@ pub struct Backend {
     auth_tree: sled::Tree,
 
     /// Configuration used
+    #[allow(dead_code)]
     config: BackendConfig,
 }
 
@@ -268,7 +269,7 @@ impl Backend {
             // Write all key-value pairs
             let mut count = 0u32;
             for item in tree.iter() {
-                let (k, v) = item?;
+                let (_k, _v) = item?;
                 count += 1;
             }
 
@@ -387,7 +388,7 @@ impl Backend {
     /// Deletes all entries in the kv_rev tree with revision < compact_revision.
     /// The kv_rev key format is `{revision_be_bytes}{key_bytes}`.
     pub fn compact(&self, revision: i64) -> BackendResult<()> {
-        let compact_key = revision.to_be_bytes();
+        let _compact_key = revision.to_be_bytes();
         let mut batch = sled::Batch::default();
         let mut count = 0u64;
 
@@ -462,7 +463,7 @@ mod tests {
         };
 
         let backend = Backend::new(config).unwrap();
-        assert!(backend.size() >= 0);
+        let _size = backend.size(); // Verify size() works without panicking
     }
 
     #[test]

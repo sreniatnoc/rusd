@@ -56,7 +56,7 @@ impl KvService {
 
     /// Evaluates a single Compare operation for txn.
     fn evaluate_compare(&self, cmp: &Compare, current_revision: i64) -> bool {
-        use crate::etcdserverpb::compare::{CompareResult, CompareTarget, TargetUnion};
+        use crate::etcdserverpb::compare::{CompareResult, TargetUnion};
 
         // Look up the key
         let mut range_end = cmp.key.clone();

@@ -8,7 +8,7 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use thiserror::Error;
-use tracing::{debug, info, warn};
+use tracing::debug;
 use uuid::Uuid;
 
 /// Cluster-related errors.
@@ -417,7 +417,7 @@ mod tests {
         assert_eq!(manager.voter_count(), 0);
 
         // Add 2 more voting members
-        let m2 = manager
+        let _m2 = manager
             .add_member(
                 "m2".to_string(),
                 vec!["http://localhost:2380".to_string()],
@@ -426,7 +426,7 @@ mod tests {
             )
             .unwrap();
 
-        let m3 = manager
+        let _m3 = manager
             .add_member(
                 "m3".to_string(),
                 vec!["http://localhost:2381".to_string()],

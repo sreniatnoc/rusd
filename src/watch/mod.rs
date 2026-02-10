@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 /// Watch-related errors.
 #[derive(Error, Debug)]
@@ -160,7 +160,9 @@ pub struct WatchHub {
     cluster_id: u64,
 
     /// Crossbeam channel for internal event dispatch
+    #[allow(dead_code)]
     event_tx: Sender<WatchEvent>,
+    #[allow(dead_code)]
     event_rx: Receiver<WatchEvent>,
 }
 

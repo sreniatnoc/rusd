@@ -1,6 +1,5 @@
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
-use tracing::debug;
 
 use crate::raft::node::RaftNode;
 use crate::raft::transport as raft_transport;

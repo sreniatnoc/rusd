@@ -118,10 +118,10 @@ impl Maintenance for MaintenanceService {
 
     async fn snapshot(
         &self,
-        request: Request<SnapshotRequest>,
+        _request: Request<SnapshotRequest>,
     ) -> Result<Response<Self::SnapshotStream>, Status> {
         let (tx, rx) = mpsc::channel(128);
-        let store = self.store.clone();
+        let _store = self.store.clone();
 
         tokio::spawn(async move {
             // TODO: Implement snapshot creation
