@@ -71,7 +71,18 @@ openssl x509 -req -in "$CERT_DIR/server.csr" \
     -CAcreateserial -out "$CERT_DIR/server-cert.pem" -days 1 \
     -extensions v3_req -extfile "$CERT_DIR/server-ext.cnf" 2>/dev/null
 
-echo "Certificates generated in $CERT_DIR"
+# Generate client key and CSR (for mTLS)
+openssl genrsa -out "$CERT_DIR/client-key.pem" 2048 2>/dev/null
+openssl req -new -key "$CERT_DIR/client-key.pem" \
+    -out "$CERT_DIR/client.csr" \
+    -subj "/CN=etcdctl-client" 2>/dev/null
+
+# Sign client cert with same CA
+openssl x509 -req -in "$CERT_DIR/client.csr" \
+    -CA "$CERT_DIR/ca-cert.pem" -CAkey "$CERT_DIR/ca-key.pem" \
+    -CAcreateserial -out "$CERT_DIR/client-cert.pem" -days 1 2>/dev/null
+
+echo "Certificates generated in $CERT_DIR (server + client for mTLS)"
 
 # Step 2: Start rusd with TLS
 echo "Starting rusd with TLS on port $CLIENT_PORT..."
@@ -100,7 +111,7 @@ echo "Started rusd with PID $RUSD_PID"
 
 # Step 3: Wait for rusd TLS server to be ready
 ENDPOINT="https://127.0.0.1:$CLIENT_PORT"
-ETCDCTL_FLAGS="--endpoints=$ENDPOINT --cacert=$CERT_DIR/ca-cert.pem"
+ETCDCTL_FLAGS="--endpoints=$ENDPOINT --cacert=$CERT_DIR/ca-cert.pem --cert=$CERT_DIR/client-cert.pem --key=$CERT_DIR/client-key.pem"
 
 echo "Waiting for rusd TLS server to be ready..."
 for i in $(seq 1 30); do
