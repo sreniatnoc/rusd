@@ -1,8 +1,8 @@
 # rusd Test Report: K8s Compatibility Validation
 
-**Date:** 2026-02-09
-**Version:** v0.1.0 (commit 3ba6827)
-**Test Environment:** macOS (Darwin 25.3.0), Kind v0.x, K8s v1.35.0
+**Date:** 2026-02-10 (updated)
+**Version:** v0.1.0 (commit a29ebc3)
+**Test Environment:** macOS (Darwin 25.3.0), Kind v0.x, K8s v1.35.0 + GitHub Actions CI (ubuntu-latest)
 **Architecture:** rusd native on host, Kind cluster via `host.docker.internal:2479`
 
 ---
@@ -13,23 +13,25 @@ rusd successfully operates as an external etcd replacement for a Kubernetes v1.3
 
 ---
 
-## Unit Tests: 40/40 PASS
+## Unit Tests: 48/48 PASS
 
-All library-level unit tests pass:
+All library-level unit tests pass (including 4 main.rs tests):
 
 | Module | Tests | Status |
 |--------|-------|--------|
-| storage::backend | 8 | PASS |
-| storage::mvcc | 4 | PASS |
-| storage::index | 8 | PASS |
-| raft::log | 4 | PASS |
-| raft::node | 4 | PASS |
+| storage::backend | 4 | PASS |
+| storage::mvcc | 8 | PASS |
+| storage::index | 5 | PASS |
+| storage::compaction | 2 | PASS |
 | watch | 4 | PASS |
 | lease | 4 | PASS |
-| auth | 2 | PASS |
-| cluster | 2 | PASS |
+| auth | 3 | PASS |
+| cluster | 6 | PASS |
+| server | 4 | PASS |
+| main (URL parsing) | 4 | PASS |
+| **Total** | **48** | **PASS** |
 
-## Integration Tests: 11/12 PASS (1 ignored)
+## Integration Tests: 12/13 PASS (1 ignored)
 
 Rewritten to use in-process gRPC (tonic) clients with random port allocation.
 
@@ -43,10 +45,11 @@ Rewritten to use in-process gRPC (tonic) clients with random port allocation.
 | test_compaction | PASS | Put 5 revisions, Compact |
 | test_snapshot_restore | IGNORED | Snapshot RPC returns Unimplemented |
 | test_member_list | PASS | MemberList RPC succeeds |
-| test_status | PASS | Maintenance Status returns version |
+| test_status | PASS | Maintenance Status returns real leader/raft_index/db_size |
 | test_auth_enable_disable | PASS | AuthEnable/AuthDisable RPCs |
 | test_range_with_limit | PASS | Put 10 keys, Range with limit=5 |
 | test_concurrent_puts | PASS | 20 concurrent puts, verify all present |
+| test_multinode_cluster_startup | PASS | 3-node cluster starts and elects leader |
 
 ---
 
@@ -63,12 +66,12 @@ Rewritten to use in-process gRPC (tonic) clients with random port allocation.
 | Watch | Cancel | PASS | Via WatchCancelRequest |
 | Watch | Progress | PASS | Returns current revision |
 | Lease | Grant | PASS | With TTL |
-| Lease | Revoke | PASS | Does not clean attached keys (bug) |
+| Lease | Revoke | PASS | Cleans attached keys (fixed 2026-02-10) |
 | Lease | List | PASS | |
 | Lease | KeepAlive | PASS | |
 | Cluster | Member List | PASS | Single member |
 | Cluster | Endpoint Health | PASS | |
-| Cluster | Endpoint Status | FAIL | Panics (missing response fields) |
+| Cluster | Endpoint Status | PASS | Returns real leader/raft_index/db_size (fixed 2026-02-10) |
 | Maintenance | Compact | PASS | |
 | Maintenance | Snapshot | NOT IMPL | Returns unimplemented |
 | Auth | User Add | PASS | |
@@ -133,16 +136,11 @@ Rewritten to use in-process gRPC (tonic) clients with random port allocation.
 **Impact:** None observable - all K8s operations complete successfully despite these errors.
 **Fix:** Implement proper revision-indexed storage in MVCC store.
 
-### 2. Lease Revoke Does Not Clean Attached Keys
-**Severity:** Medium
-**Description:** When a lease is revoked, keys attached to that lease are not automatically deleted.
-**Impact:** Keys may persist beyond lease expiration.
-**Fix:** Wire lease expiration to key deletion in LeaseManager.
+### 2. ~~Lease Revoke Does Not Clean Attached Keys~~ (FIXED 2026-02-10)
+**Status:** Resolved. Lease revocation now deletes attached keys.
 
-### 3. etcdctl `endpoint status` Panics
-**Severity:** Low
-**Description:** The maintenance endpoint status response is missing required fields, causing a panic.
-**Fix:** Populate all StatusResponse fields.
+### 3. ~~etcdctl `endpoint status` Panics~~ (FIXED 2026-02-10)
+**Status:** Resolved. StatusResponse now returns real values for leader, raft_index, raft_applied_index, and db_size from the Raft state machine and MVCC store.
 
 ### 4. Integration Tests: Snapshot Not Implemented
 **Severity:** Low

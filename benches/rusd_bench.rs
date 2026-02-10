@@ -242,7 +242,7 @@ fn bench_txn(c: &mut Criterion) {
                     &format!("txn/key{}", counter),
                     "expected_value",
                     "new_value",
-                )
+                );
             }
         })
     });
@@ -267,7 +267,7 @@ fn bench_txn(c: &mut Criterion) {
     group.bench_function("sequential_txn_100", |b| {
         b.iter(|| {
             for i in 0..100 {
-                client.txn(&format!("txn/key{}", i), "expected_value", "new_value")
+                client.txn(&format!("txn/key{}", i), "expected_value", "new_value");
             }
         })
     });
