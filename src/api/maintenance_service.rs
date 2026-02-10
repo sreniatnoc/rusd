@@ -52,7 +52,11 @@ impl Maintenance for MaintenanceService {
             header: Some(self.build_response_header()),
             version: env!("CARGO_PKG_VERSION").to_string(),
             db_size: 0, // TODO: Get db_size from store
-            leader: self.raft.member_id(),
+            leader: if self.raft.is_leader() {
+                self.raft.member_id()
+            } else {
+                self.raft.get_state().leader_id().unwrap_or(0)
+            },
             raft_index: 0, // TODO: Get raft_index from raft node
             raft_term: self.raft.current_term(),
             db_size_in_use: 0, // TODO: Get db_size_in_use from store

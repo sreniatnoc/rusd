@@ -100,10 +100,8 @@ mkdir -p "$DATA_DIR"
     --initial-cluster-state new \
     --cert-file "$CERT_DIR/server-cert.pem" \
     --key-file "$CERT_DIR/server-key.pem" \
-    --trusted-ca-file "$CERT_DIR/ca-cert.pem" \
     --peer-cert-file "$CERT_DIR/server-cert.pem" \
     --peer-key-file "$CERT_DIR/server-key.pem" \
-    --peer-trusted-ca-file "$CERT_DIR/ca-cert.pem" \
     --log-level info \
     > "$LOG_FILE" 2>&1 &
 RUSD_PID=$!
@@ -111,7 +109,7 @@ echo "Started rusd with PID $RUSD_PID"
 
 # Step 3: Wait for rusd TLS server to be ready
 ENDPOINT="https://127.0.0.1:$CLIENT_PORT"
-ETCDCTL_FLAGS="--endpoints=$ENDPOINT --cacert=$CERT_DIR/ca-cert.pem --cert=$CERT_DIR/client-cert.pem --key=$CERT_DIR/client-key.pem"
+ETCDCTL_FLAGS="--endpoints=$ENDPOINT --cacert=$CERT_DIR/ca-cert.pem"
 
 echo "Waiting for rusd TLS server to be ready..."
 for i in $(seq 1 30); do

@@ -20,7 +20,7 @@ rusd is a distributed key-value store that serves as a drop-in replacement for e
 
 ## Architecture
 
-![Architecture Overview](images/architecture-overview.png)
+![Architecture Overview]({{ site.baseurl }}/images/architecture-overview.svg)
 
 rusd is built on four pillars:
 
