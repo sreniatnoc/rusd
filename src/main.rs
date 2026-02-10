@@ -137,6 +137,35 @@ struct Args {
     /// 'trace' is for detailed low-level debugging.
     #[arg(long, default_value = "info")]
     log_level: String,
+
+    /// Path to TLS certificate file (PEM encoded).
+    /// When provided along with --key-file, the server uses TLS for client connections.
+    #[arg(long)]
+    cert_file: Option<String>,
+
+    /// Path to TLS private key file (PEM encoded).
+    #[arg(long)]
+    key_file: Option<String>,
+
+    /// Path to trusted CA certificate file for verifying client certificates.
+    /// When set, the server requires and verifies client TLS certificates (mTLS).
+    #[arg(long)]
+    trusted_ca_file: Option<String>,
+
+    /// Path to TLS certificate file for peer connections.
+    /// Falls back to --cert-file if not set.
+    #[arg(long)]
+    peer_cert_file: Option<String>,
+
+    /// Path to TLS private key file for peer connections.
+    /// Falls back to --key-file if not set.
+    #[arg(long)]
+    peer_key_file: Option<String>,
+
+    /// Path to trusted CA certificate for verifying peer certificates.
+    /// Falls back to --trusted-ca-file if not set.
+    #[arg(long)]
+    peer_trusted_ca_file: Option<String>,
 }
 
 #[tokio::main]
@@ -248,6 +277,12 @@ fn build_server_config(args: &Args) -> anyhow::Result<ServerConfig> {
         auto_compaction_mode,
         auto_compaction_retention: args.auto_compaction_retention.clone(),
         cache_size_mb: args.cache_size_mb,
+        tls_cert_file: args.cert_file.clone(),
+        tls_key_file: args.key_file.clone(),
+        tls_trusted_ca_file: args.trusted_ca_file.clone(),
+        peer_tls_cert_file: args.peer_cert_file.clone(),
+        peer_tls_key_file: args.peer_key_file.clone(),
+        peer_tls_trusted_ca_file: args.peer_trusted_ca_file.clone(),
     })
 }
 

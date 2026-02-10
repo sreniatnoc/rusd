@@ -84,6 +84,8 @@ pub struct GrpcTransport {
     client_timeout: std::time::Duration,
     /// Cached gRPC client connections to peers
     clients: Arc<RwLock<HashMap<u64, crate::raftpb::raft_internal_client::RaftInternalClient<tonic::transport::Channel>>>>,
+    /// Optional TLS config for peer connections
+    tls_config: Option<tonic::transport::ClientTlsConfig>,
 }
 
 impl GrpcTransport {
@@ -92,6 +94,17 @@ impl GrpcTransport {
             peer_addresses: Arc::new(RwLock::new(peer_addresses)),
             client_timeout: std::time::Duration::from_secs(5),
             clients: Arc::new(RwLock::new(HashMap::new())),
+            tls_config: None,
+        }
+    }
+
+    /// Create a new GrpcTransport with TLS enabled for peer connections.
+    pub fn with_tls(peer_addresses: HashMap<u64, String>, tls_config: tonic::transport::ClientTlsConfig) -> Self {
+        Self {
+            peer_addresses: Arc::new(RwLock::new(peer_addresses)),
+            client_timeout: std::time::Duration::from_secs(5),
+            clients: Arc::new(RwLock::new(HashMap::new())),
+            tls_config: Some(tls_config),
         }
     }
 
@@ -129,10 +142,16 @@ impl GrpcTransport {
 
         // Create new connection
         let address = self.get_peer_address(peer_id).await?;
-        let endpoint = tonic::transport::Endpoint::from_shared(address.clone())
+        let mut endpoint = tonic::transport::Endpoint::from_shared(address.clone())
             .map_err(|e| RaftError::TransportError(format!("Invalid endpoint {}: {}", address, e)))?
             .timeout(self.client_timeout)
             .connect_timeout(std::time::Duration::from_secs(3));
+
+        // Apply TLS config if available
+        if let Some(tls) = &self.tls_config {
+            endpoint = endpoint.tls_config(tls.clone())
+                .map_err(|e| RaftError::TransportError(format!("TLS config error for peer {}: {}", peer_id, e)))?;
+        }
 
         let channel = endpoint.connect().await
             .map_err(|e| RaftError::TransportError(format!("Failed to connect to peer {}: {}", peer_id, e)))?;

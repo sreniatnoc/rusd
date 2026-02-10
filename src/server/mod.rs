@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use tonic::transport::Server;
+use tonic::transport::{Identity, Server, ServerTlsConfig};
 use tracing::{debug, error, info, warn};
 
 use crate::api::kv_service::KvService;
@@ -113,6 +113,24 @@ pub struct ServerConfig {
 
     /// Backend page cache size in megabytes.
     pub cache_size_mb: u64,
+
+    /// TLS certificate file path for client connections (PEM encoded).
+    pub tls_cert_file: Option<String>,
+
+    /// TLS private key file path for client connections (PEM encoded).
+    pub tls_key_file: Option<String>,
+
+    /// Trusted CA file for client certificate verification (mTLS).
+    pub tls_trusted_ca_file: Option<String>,
+
+    /// TLS certificate file path for peer connections.
+    pub peer_tls_cert_file: Option<String>,
+
+    /// TLS private key file path for peer connections.
+    pub peer_tls_key_file: Option<String>,
+
+    /// Trusted CA file for peer certificate verification.
+    pub peer_tls_trusted_ca_file: Option<String>,
 }
 
 /// Cluster initialization state.
@@ -182,6 +200,12 @@ impl Default for ServerConfig {
             auto_compaction_mode: AutoCompactionMode::Periodic,
             auto_compaction_retention: "0".to_string(),
             cache_size_mb: 256,
+            tls_cert_file: None,
+            tls_key_file: None,
+            tls_trusted_ca_file: None,
+            peer_tls_cert_file: None,
+            peer_tls_key_file: None,
+            peer_tls_trusted_ca_file: None,
         }
     }
 }
@@ -256,7 +280,29 @@ impl RusdServer {
         for peer in &peers {
             peer_addresses.insert(peer.id, format!("http://{}:2379", peer.id)); // TODO: Use actual peer URLs
         }
-        let transport = Arc::new(GrpcTransport::new(peer_addresses));
+        // Create transport with optional TLS
+        let transport = if config.peer_tls_cert_file.is_some() || config.tls_cert_file.is_some() {
+            let cert_file = config.peer_tls_cert_file.as_deref().or(config.tls_cert_file.as_deref());
+            let ca_file = config.peer_tls_trusted_ca_file.as_deref().or(config.tls_trusted_ca_file.as_deref());
+            let mut tls = tonic::transport::ClientTlsConfig::new();
+            if let Some(ca_path) = ca_file {
+                let ca_pem = std::fs::read(ca_path)
+                    .map_err(|e| anyhow::anyhow!("Failed to read peer CA {}: {}", ca_path, e))?;
+                tls = tls.ca_certificate(tonic::transport::Certificate::from_pem(&ca_pem));
+            }
+            if let Some(cert_path) = cert_file {
+                let key_file = config.peer_tls_key_file.as_deref().or(config.tls_key_file.as_deref())
+                    .ok_or_else(|| anyhow::anyhow!("Peer cert requires peer key"))?;
+                let cert_pem = std::fs::read(cert_path)
+                    .map_err(|e| anyhow::anyhow!("Failed to read peer cert {}: {}", cert_path, e))?;
+                let key_pem = std::fs::read(key_file)
+                    .map_err(|e| anyhow::anyhow!("Failed to read peer key {}: {}", key_file, e))?;
+                tls = tls.identity(tonic::transport::Identity::from_pem(&cert_pem, &key_pem));
+            }
+            Arc::new(GrpcTransport::with_tls(peer_addresses, tls))
+        } else {
+            Arc::new(GrpcTransport::new(peer_addresses))
+        };
         let (apply_tx, apply_rx) = mpsc::channel(10000);
 
         // Parse peers from initial_cluster config
@@ -347,7 +393,21 @@ impl RusdServer {
         if !peer_urls.is_empty() {
             let peer_addr = peer_urls[0];
             let raft_internal_service = RaftInternalService::new(self.raft.clone());
-            let peer_server = Server::builder()
+
+            // Configure peer TLS (falls back to client TLS if peer-specific not set)
+            let peer_tls = load_tls_config(
+                self.config.peer_tls_cert_file.as_deref().or(self.config.tls_cert_file.as_deref()),
+                self.config.peer_tls_key_file.as_deref().or(self.config.tls_key_file.as_deref()),
+                self.config.peer_tls_trusted_ca_file.as_deref().or(self.config.tls_trusted_ca_file.as_deref()),
+            )?;
+
+            let mut peer_builder = Server::builder();
+            if let Some(tls) = peer_tls {
+                peer_builder = peer_builder.tls_config(tls)?;
+                info!("Peer RPC server TLS enabled");
+            }
+
+            let peer_server = peer_builder
                 .add_service(RaftInternalServer::new(raft_internal_service))
                 .serve(peer_addr);
 
@@ -397,8 +457,20 @@ impl RusdServer {
         ));
         let auth_service = AuthService::new(auth_mgr_for_service);
 
+        // Configure client TLS if cert and key are provided
+        let client_tls = load_tls_config(
+            self.config.tls_cert_file.as_deref(),
+            self.config.tls_key_file.as_deref(),
+            self.config.tls_trusted_ca_file.as_deref(),
+        )?;
+
         // Build gRPC server with all services and HTTP/2 settings for K8s compat
-        let server = Server::builder()
+        let mut builder = Server::builder();
+        if let Some(tls) = client_tls {
+            builder = builder.tls_config(tls)?;
+            info!("Client gRPC server TLS enabled");
+        }
+        let server = builder
             .http2_keepalive_interval(Some(Duration::from_secs(10)))
             .http2_keepalive_timeout(Some(Duration::from_secs(20)))
             .initial_connection_window_size(Some(1024 * 1024))  // 1MB
@@ -547,6 +619,40 @@ fn parse_socket_addrs(urls: &[String]) -> anyhow::Result<Vec<SocketAddr>> {
     }
 
     Ok(addrs)
+}
+
+/// Load TLS configuration from cert/key files.
+/// Returns None if cert_file is not provided (TLS disabled).
+fn load_tls_config(
+    cert_file: Option<&str>,
+    key_file: Option<&str>,
+    ca_file: Option<&str>,
+) -> anyhow::Result<Option<ServerTlsConfig>> {
+    let (cert_path, key_path) = match (cert_file, key_file) {
+        (Some(c), Some(k)) => (c, k),
+        (Some(_), None) => return Err(anyhow::anyhow!("--cert-file requires --key-file")),
+        (None, Some(_)) => return Err(anyhow::anyhow!("--key-file requires --cert-file")),
+        (None, None) => return Ok(None),
+    };
+
+    let cert_pem = std::fs::read(cert_path)
+        .map_err(|e| anyhow::anyhow!("Failed to read cert file {}: {}", cert_path, e))?;
+    let key_pem = std::fs::read(key_path)
+        .map_err(|e| anyhow::anyhow!("Failed to read key file {}: {}", key_path, e))?;
+
+    let identity = Identity::from_pem(&cert_pem, &key_pem);
+    let mut tls_config = ServerTlsConfig::new().identity(identity);
+
+    if let Some(ca_path) = ca_file {
+        let ca_pem = std::fs::read(ca_path)
+            .map_err(|e| anyhow::anyhow!("Failed to read CA file {}: {}", ca_path, e))?;
+        let ca_cert = tonic::transport::Certificate::from_pem(&ca_pem);
+        tls_config = tls_config.client_ca_root(ca_cert);
+        info!("mTLS enabled: client certificates will be verified against {}", ca_path);
+    }
+
+    info!("TLS configured with cert={}, key={}", cert_path, key_path);
+    Ok(Some(tls_config))
 }
 
 /// Background task that processes log entries from Raft's apply channel.
