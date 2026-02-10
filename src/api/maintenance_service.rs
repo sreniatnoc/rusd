@@ -48,21 +48,21 @@ impl Maintenance for MaintenanceService {
         &self,
         _request: Request<StatusRequest>,
     ) -> Result<Response<StatusResponse>, Status> {
+        let db_size = self.store.db_size();
+        let raft_state = self.raft.get_state();
+        let raft_log = self.raft.get_log();
+
         let response = StatusResponse {
             header: Some(self.build_response_header()),
             version: env!("CARGO_PKG_VERSION").to_string(),
-            db_size: 0, // TODO: Get db_size from store
-            leader: if self.raft.is_leader() {
-                self.raft.member_id()
-            } else {
-                self.raft.get_state().leader_id().unwrap_or(0)
-            },
-            raft_index: 0, // TODO: Get raft_index from raft node
+            db_size,
+            leader: raft_state.leader_id().unwrap_or(0),
+            raft_index: raft_log.last_index(),
             raft_term: self.raft.current_term(),
-            db_size_in_use: 0, // TODO: Get db_size_in_use from store
+            db_size_in_use: db_size,
             errors: vec![],
             is_learner: false,
-            raft_applied_index: 0,
+            raft_applied_index: raft_state.last_applied(),
         };
 
         Ok(Response::new(response))

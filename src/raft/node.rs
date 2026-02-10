@@ -47,7 +47,7 @@ impl RaftNode {
 
         // Single-node cluster: auto-elect as leader immediately
         if config.peers.is_empty() {
-            state.become_leader(&[]);
+            state.become_leader(config.id, &[]);
         }
 
         Ok(Self {
@@ -361,8 +361,10 @@ impl RaftNode {
     }
 
     async fn become_leader(&self) -> RaftResult<()> {
-        self.state
-            .become_leader(&self.config.peers.iter().map(|p| p.id).collect::<Vec<_>>());
+        self.state.become_leader(
+            self.config.id,
+            &self.config.peers.iter().map(|p| p.id).collect::<Vec<_>>(),
+        );
 
         // Reset heartbeat timer (guard drops before .await)
         {

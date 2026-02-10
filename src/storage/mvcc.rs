@@ -264,6 +264,11 @@ impl MvccStore {
         self.compact_revision.load(Ordering::SeqCst)
     }
 
+    /// Returns the approximate database size on disk in bytes.
+    pub fn db_size(&self) -> i64 {
+        self.backend.size() as i64
+    }
+
     /// Increments and returns the next revision.
     fn next_revision(&self) -> i64 {
         self.current_revision.fetch_add(1, Ordering::SeqCst) + 1

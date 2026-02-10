@@ -76,11 +76,11 @@ impl RaftState {
         *self.leader_id.write() = None;
     }
 
-    pub fn become_leader(&self, peer_ids: &[u64]) {
-        self.current_term.fetch_add(1, Ordering::AcqRel);
+    pub fn become_leader(&self, self_id: u64, peer_ids: &[u64]) {
+        // Note: caller (start_real_election) already incremented the term
         *self.role.write() = RaftRole::Leader;
         *self.voted_for.write() = None;
-        *self.leader_id.write() = None; // Leader doesn't set its own leader_id
+        *self.leader_id.write() = Some(self_id); // Leader must know its own ID for StatusResponse
 
         // Initialize next_index and match_index for all peers
         let mut next_idx = HashMap::new();
