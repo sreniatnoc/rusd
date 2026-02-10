@@ -7,14 +7,13 @@
 //! - Password hashing with bcrypt
 //! - Persistent storage via backend
 
-use std::sync::Arc;
-use std::collections::HashMap;
-use parking_lot::RwLock;
-use serde::{Serialize, Deserialize};
-use thiserror::Error;
-use tracing::{debug, info, warn};
-use jsonwebtoken::{encode, decode, Header, Validation, EncodingKey, DecodingKey};
 use bcrypt::{hash, verify};
+use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
+use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use thiserror::Error;
+use tracing::{debug, info};
 
 /// Auth-related errors.
 #[derive(Error, Debug)]
@@ -353,10 +352,7 @@ impl AuthStore {
             hash(password, 10).map_err(|_| AuthError::BcryptError)?
         };
 
-        users.insert(
-            name.to_string(),
-            User::new(name.to_string(), password_hash),
-        );
+        users.insert(name.to_string(), User::new(name.to_string(), password_hash));
 
         self.revision
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -382,9 +378,7 @@ impl AuthStore {
     /// Deletes a user.
     pub fn user_delete(&self, name: &str) -> AuthResult<()> {
         if name == "root" {
-            return Err(AuthError::Internal(
-                "Cannot delete root user".to_string(),
-            ));
+            return Err(AuthError::Internal("Cannot delete root user".to_string()));
         }
 
         let mut users = self.users.write();
@@ -495,9 +489,7 @@ impl AuthStore {
     /// Deletes a role.
     pub fn role_delete(&self, name: &str) -> AuthResult<()> {
         if name == "root" {
-            return Err(AuthError::Internal(
-                "Cannot delete root role".to_string(),
-            ));
+            return Err(AuthError::Internal("Cannot delete root role".to_string()));
         }
 
         let mut roles = self.roles.write();
@@ -550,7 +542,9 @@ impl AuthStore {
 
         if let Some(role_obj) = roles.get_mut(role) {
             let original_len = role_obj.permissions.len();
-            role_obj.permissions.retain(|p| !(p.key == key && p.range_end == range_end));
+            role_obj
+                .permissions
+                .retain(|p| !(p.key == key && p.range_end == range_end));
 
             if role_obj.permissions.len() != original_len {
                 self.revision
@@ -585,7 +579,7 @@ mod tests {
         assert!(perm.covers(b"foo", b""));
         assert!(perm.covers(b"foobar", b""));
         assert!(!perm.covers(b"fop", b""));
-        assert!(!perm.covers(b"fon", b""));  // "fon" < "foo", so outside range
+        assert!(!perm.covers(b"fon", b"")); // "fon" < "foo", so outside range
     }
 
     #[test]
@@ -605,7 +599,7 @@ mod tests {
         let store = AuthStore::new(None);
 
         store.role_add("reader").unwrap();
-        let mut perm = Permission {
+        let perm = Permission {
             perm_type: PermissionType::Read,
             key: b"keys/".to_vec(),
             range_end: b"keys0".to_vec(),

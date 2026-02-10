@@ -17,7 +17,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use thiserror::Error;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// Backend storage errors.
 #[derive(Error, Debug)]
@@ -73,8 +73,13 @@ pub struct Backend {
     /// The sled database instance
     db: sled::Db,
 
-    /// Main key-value tree for storing data
+    /// Main key-value tree for storing data (latest value per key)
     kv_tree: sled::Tree,
+
+    /// Revision-indexed key-value tree for historical reads.
+    /// Key format: `{revision_be_bytes}{key_bytes}` (8-byte big-endian revision prefix)
+    /// This enables range scans by revision for watch catchup and point-in-time reads.
+    kv_rev_tree: sled::Tree,
 
     /// Index tree for key -> revision mappings
     index_tree: sled::Tree,
@@ -89,6 +94,7 @@ pub struct Backend {
     auth_tree: sled::Tree,
 
     /// Configuration used
+    #[allow(dead_code)]
     config: BackendConfig,
 }
 
@@ -113,6 +119,7 @@ impl Backend {
 
         // Create or open all trees
         let kv_tree = db.open_tree("kv")?;
+        let kv_rev_tree = db.open_tree("kv_rev")?;
         let index_tree = db.open_tree("index")?;
         let meta_tree = db.open_tree("meta")?;
         let lease_tree = db.open_tree("lease")?;
@@ -126,6 +133,7 @@ impl Backend {
         Ok(Arc::new(Self {
             db,
             kv_tree,
+            kv_rev_tree,
             index_tree,
             meta_tree,
             lease_tree,
@@ -138,6 +146,7 @@ impl Backend {
     fn get_tree(&self, tree_name: &str) -> BackendResult<&sled::Tree> {
         match tree_name {
             "kv" => Ok(&self.kv_tree),
+            "kv_rev" => Ok(&self.kv_rev_tree),
             "index" => Ok(&self.index_tree),
             "meta" => Ok(&self.meta_tree),
             "lease" => Ok(&self.lease_tree),
@@ -249,7 +258,7 @@ impl Backend {
         let mut data = Vec::new();
 
         // Simple format: for each tree, store tree_name_len, tree_name, then all key-values
-        for tree_name in &["kv", "index", "meta", "lease", "auth"] {
+        for tree_name in &["kv", "kv_rev", "index", "meta", "lease", "auth"] {
             let tree = self.get_tree(tree_name)?;
 
             // Write tree name
@@ -260,7 +269,7 @@ impl Backend {
             // Write all key-value pairs
             let mut count = 0u32;
             for item in tree.iter() {
-                let (k, v) = item?;
+                let (_k, _v) = item?;
                 count += 1;
             }
 
@@ -376,11 +385,40 @@ impl Backend {
 
     /// Compacts the database by removing entries older than a specific revision.
     ///
-    /// This is typically called by the MVCC layer after compaction.
-    pub fn compact(&self, _revision: i64) -> BackendResult<()> {
-        // Sled doesn't require explicit compaction - it manages space automatically
-        // This is a placeholder for future optimizations
-        debug!("Compact requested (sled handles this automatically)");
+    /// Deletes all entries in the kv_rev tree with revision < compact_revision.
+    /// The kv_rev key format is `{revision_be_bytes}{key_bytes}`.
+    pub fn compact(&self, revision: i64) -> BackendResult<()> {
+        let _compact_key = revision.to_be_bytes();
+        let mut batch = sled::Batch::default();
+        let mut count = 0u64;
+
+        for item in self.kv_rev_tree.iter() {
+            let (k, _) = item?;
+            if k.len() >= 8 {
+                let rev_bytes: [u8; 8] = k[..8].try_into().unwrap();
+                let rev = i64::from_be_bytes(rev_bytes);
+                if rev < revision {
+                    batch.remove(k);
+                    count += 1;
+                } else {
+                    break; // Keys are sorted by revision (big-endian), so we can stop
+                }
+            }
+        }
+
+        if count > 0 {
+            self.kv_rev_tree.apply_batch(batch)?;
+            info!(
+                "Compacted {} revision entries below revision {}",
+                count, revision
+            );
+        } else {
+            debug!(
+                "Compact requested at revision {} (nothing to remove)",
+                revision
+            );
+        }
+
         Ok(())
     }
 
@@ -425,7 +463,7 @@ mod tests {
         };
 
         let backend = Backend::new(config).unwrap();
-        assert!(backend.size() >= 0);
+        let _size = backend.size(); // Verify size() works without panicking
     }
 
     #[test]
@@ -469,9 +507,18 @@ mod tests {
 
         backend.batch_put("kv", &pairs).unwrap();
 
-        assert_eq!(backend.get("kv", b"key1").unwrap(), Some(b"value1".to_vec()));
-        assert_eq!(backend.get("kv", b"key2").unwrap(), Some(b"value2".to_vec()));
-        assert_eq!(backend.get("kv", b"key3").unwrap(), Some(b"value3".to_vec()));
+        assert_eq!(
+            backend.get("kv", b"key1").unwrap(),
+            Some(b"value1".to_vec())
+        );
+        assert_eq!(
+            backend.get("kv", b"key2").unwrap(),
+            Some(b"value2".to_vec())
+        );
+        assert_eq!(
+            backend.get("kv", b"key3").unwrap(),
+            Some(b"value3".to_vec())
+        );
     }
 
     #[test]

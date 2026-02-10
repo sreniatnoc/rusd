@@ -2,16 +2,16 @@ use crate::raft::config::RaftConfig;
 use crate::raft::log::RaftLog;
 use crate::raft::state::{RaftRole, RaftState};
 use crate::raft::transport::{
-    AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest,
-    InstallSnapshotResponse, RequestVoteRequest, RequestVoteResponse, RaftTransport,
+    AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest, InstallSnapshotResponse,
+    RaftTransport, RequestVoteRequest, RequestVoteResponse,
 };
-use crate::raft::{LogEntry, RaftError, RaftMessage, Result as RaftResult, EntryType};
-use parking_lot::Mutex;
-use std::sync::atomic::Ordering;
+use crate::raft::{EntryType, LogEntry, RaftError, RaftMessage, Result as RaftResult};
 use std::sync::Arc;
+use std::sync::Mutex; // std::sync::Mutex guards are Send (unlike parking_lot)
 use std::time::Duration;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
+use tracing::{debug, info, warn};
 
 pub struct RaftNode {
     config: Arc<RaftConfig>,
@@ -20,12 +20,14 @@ pub struct RaftNode {
     transport: Arc<dyn RaftTransport>,
     apply_tx: tokio::sync::mpsc::Sender<LogEntry>,
 
-    // Timers
+    // Timers - use std::sync::Mutex (Send-safe guards, unlike parking_lot)
     election_timer: Mutex<Option<Instant>>,
     heartbeat_timer: Mutex<Option<Instant>>,
 
     // Message queue for incoming RPC responses
+    #[allow(dead_code)]
     message_rx: Arc<Mutex<tokio::sync::mpsc::Receiver<(u64, RaftMessage)>>>,
+    #[allow(dead_code)]
     message_tx: Arc<tokio::sync::mpsc::Sender<(u64, RaftMessage)>>,
 }
 
@@ -49,7 +51,9 @@ impl RaftNode {
         }
 
         Ok(Self {
-            election_timer: Mutex::new(Some(Instant::now() + Self::random_election_timeout_static(&config))),
+            election_timer: Mutex::new(Some(
+                Instant::now() + Self::random_election_timeout_static(&config),
+            )),
             heartbeat_timer: Mutex::new(None),
             config,
             state,
@@ -66,17 +70,18 @@ impl RaftNode {
         use std::hash::{BuildHasher, Hasher};
 
         let mut hasher = RandomState::new().build_hasher();
-        hasher.write_u64(std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos() as u64);
+        hasher.write_u64(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos() as u64,
+        );
         let hash = hasher.finish();
 
         let range = self.config.election_timeout_max.as_millis()
             - self.config.election_timeout_min.as_millis();
         let offset_ms = (hash as u128 % range) as u64;
-        self.config.election_timeout_min
-            + Duration::from_millis(offset_ms)
+        self.config.election_timeout_min + Duration::from_millis(offset_ms)
     }
 
     fn random_election_timeout_static(config: &RaftConfig) -> Duration {
@@ -92,8 +97,8 @@ impl RaftNode {
         );
         let hash = hasher.finish();
 
-        let range = config.election_timeout_max.as_millis()
-            - config.election_timeout_min.as_millis();
+        let range =
+            config.election_timeout_max.as_millis() - config.election_timeout_min.as_millis();
         let offset_ms = (hash as u128 % range) as u64;
         config.election_timeout_min + Duration::from_millis(offset_ms)
     }
@@ -101,26 +106,44 @@ impl RaftNode {
     pub async fn tick(&self) -> RaftResult<()> {
         let now = Instant::now();
 
-        // Check election timeout
-        if let Some(timer) = *self.election_timer.lock() {
-            if now > timer {
-                self.start_election().await?;
-                *self.election_timer.lock() =
+        // Check election timeout (extract value before any .await)
+        let election_expired = {
+            self.election_timer
+                .lock()
+                .unwrap()
+                .map_or(false, |t| now > t)
+        };
+        if election_expired {
+            self.start_election().await?;
+            {
+                *self.election_timer.lock().unwrap() =
                     Some(now + Self::random_election_timeout_static(&self.config));
             }
         }
 
         // Check heartbeat timeout (only for leader)
         if self.state.is_leader() {
-            if let Some(timer) = *self.heartbeat_timer.lock() {
-                if now > timer {
+            let heartbeat_state = {
+                let timer = *self.heartbeat_timer.lock().unwrap();
+                match timer {
+                    Some(t) if now > t => 1, // expired
+                    Some(_) => 0,            // not expired
+                    None => 2,               // not set
+                }
+            };
+            match heartbeat_state {
+                1 => {
                     self.send_heartbeats().await?;
-                    *self.heartbeat_timer.lock() =
+                    {
+                        *self.heartbeat_timer.lock().unwrap() =
+                            Some(now + self.config.heartbeat_interval);
+                    }
+                }
+                2 => {
+                    *self.heartbeat_timer.lock().unwrap() =
                         Some(now + self.config.heartbeat_interval);
                 }
-            } else {
-                *self.heartbeat_timer.lock() =
-                    Some(now + self.config.heartbeat_interval);
+                _ => {} // not expired yet
             }
         }
 
@@ -128,7 +151,7 @@ impl RaftNode {
         self.apply_committed_entries().await?;
 
         // Check if snapshot is needed
-        let log_size = self.log.last_index() - self.log.first_index();
+        let log_size = self.log.last_index().saturating_sub(self.log.first_index());
         if log_size > self.config.snapshot_threshold {
             self.trigger_snapshot().await?;
         }
@@ -159,7 +182,6 @@ impl RaftNode {
 
         self.state.become_pre_candidate();
 
-        let mut vote_count = 1; // Vote for self
         let peers: Vec<u64> = self
             .config
             .peers
@@ -168,31 +190,72 @@ impl RaftNode {
             .filter(|id| *id != self.config.id)
             .collect();
 
+        if peers.is_empty() {
+            return self.start_real_election().await;
+        }
+
         let request = RequestVoteRequest {
-            term,
+            term: term + 1, // Pre-vote uses next term
             candidate_id: self.config.id,
             last_log_index: last_index,
             last_log_term: last_term,
             pre_vote: true,
         };
 
+        let total_nodes = peers.len() + 1;
+        let majority = total_nodes / 2 + 1;
+        let (vote_tx, mut vote_rx) = tokio::sync::mpsc::channel::<bool>(peers.len());
+
         for peer_id in peers {
             let request_clone = request.clone();
             let transport_clone = self.transport.clone();
+            let vote_tx_clone = vote_tx.clone();
 
             tokio::spawn(async move {
-                let _ = transport_clone
+                match transport_clone
                     .send_request_vote(peer_id, request_clone)
-                    .await;
+                    .await
+                {
+                    Ok(response) => {
+                        let _ = vote_tx_clone.send(response.vote_granted).await;
+                    }
+                    Err(_) => {
+                        let _ = vote_tx_clone.send(false).await;
+                    }
+                }
             });
         }
+        drop(vote_tx);
 
-        // For now, we need majority. In real implementation, collect responses.
-        if vote_count * 2 > self.config.peers.len() {
-            self.start_real_election().await
-        } else {
-            Ok(())
+        let mut vote_count: usize = 1; // Self vote
+        let election_timeout = self.random_election_timeout();
+        let deadline = tokio::time::Instant::now() + election_timeout;
+
+        loop {
+            tokio::select! {
+                result = vote_rx.recv() => {
+                    match result {
+                        Some(granted) => {
+                            if granted { vote_count += 1; }
+                            if vote_count >= majority {
+                                debug!("Pre-vote passed for term {} ({}/{})", term + 1, vote_count, total_nodes);
+                                return self.start_real_election().await;
+                            }
+                        }
+                        None => break,
+                    }
+                }
+                _ = tokio::time::sleep_until(deadline) => break,
+            }
         }
+
+        debug!(
+            "Pre-vote failed for term {} ({}/{})",
+            term + 1,
+            vote_count,
+            total_nodes
+        );
+        Ok(())
     }
 
     async fn start_real_election(&self) -> RaftResult<()> {
@@ -204,7 +267,6 @@ impl RaftNode {
         let last_index = self.log.last_index();
         let last_term = self.log.last_term();
 
-        let mut vote_count = 1; // Vote for self
         let peers: Vec<u64> = self
             .config
             .peers
@@ -212,6 +274,12 @@ impl RaftNode {
             .map(|p| p.id)
             .filter(|id| *id != self.config.id)
             .collect();
+
+        if peers.is_empty() {
+            // Single-node cluster: auto-elect
+            self.become_leader().await?;
+            return Ok(());
+        }
 
         let request = RequestVoteRequest {
             term: new_term,
@@ -221,39 +289,86 @@ impl RaftNode {
             pre_vote: false,
         };
 
+        // Collect vote responses with a timeout
+        let (vote_tx, mut vote_rx) = tokio::sync::mpsc::channel::<bool>(peers.len());
+        let total_nodes = peers.len() + 1; // peers + self
+        let majority = total_nodes / 2 + 1;
+
         for peer_id in peers.iter().copied() {
             let request_clone = request.clone();
             let transport_clone = self.transport.clone();
+            let vote_tx_clone = vote_tx.clone();
+            let state_clone = self.state.clone();
 
             tokio::spawn(async move {
-                let _ = transport_clone
+                match transport_clone
                     .send_request_vote(peer_id, request_clone)
-                    .await;
+                    .await
+                {
+                    Ok(response) => {
+                        if response.term > new_term {
+                            // Higher term discovered, step down
+                            state_clone.become_follower(response.term);
+                        }
+                        let _ = vote_tx_clone.send(response.vote_granted).await;
+                    }
+                    Err(_) => {
+                        let _ = vote_tx_clone.send(false).await;
+                    }
+                }
             });
         }
+        drop(vote_tx); // Drop sender so rx completes when all spawned tasks finish
 
-        // In real implementation, we'd wait for responses and check for majority
-        // For now, become leader if we have enough peers
-        if vote_count * 2 > (self.config.peers.len() + 1) {
-            self.become_leader().await?;
+        // Count votes (self-vote = 1)
+        let mut vote_count: usize = 1;
+        let election_timeout = self.random_election_timeout();
+
+        let deadline = tokio::time::Instant::now() + election_timeout;
+        loop {
+            tokio::select! {
+                result = vote_rx.recv() => {
+                    match result {
+                        Some(granted) => {
+                            if granted {
+                                vote_count += 1;
+                            }
+                            if vote_count >= majority {
+                                info!("Won election for term {} ({}/{} votes)", new_term, vote_count, total_nodes);
+                                self.become_leader().await?;
+                                return Ok(());
+                            }
+                        }
+                        None => break, // All responses received
+                    }
+                }
+                _ = tokio::time::sleep_until(deadline) => {
+                    debug!("Election timeout for term {}, got {}/{} votes", new_term, vote_count, total_nodes);
+                    break;
+                }
+            }
+        }
+
+        // Didn't get majority, remain candidate
+        if !self.state.is_leader() {
+            debug!(
+                "Election for term {} inconclusive ({}/{} votes)",
+                new_term, vote_count, total_nodes
+            );
         }
 
         Ok(())
     }
 
     async fn become_leader(&self) -> RaftResult<()> {
-        self.state.become_leader(
-            &self
-                .config
-                .peers
-                .iter()
-                .map(|p| p.id)
-                .collect::<Vec<_>>(),
-        );
+        self.state
+            .become_leader(&self.config.peers.iter().map(|p| p.id).collect::<Vec<_>>());
 
-        // Reset heartbeat timer
-        *self.heartbeat_timer.lock() =
-            Some(Instant::now() + self.config.heartbeat_interval);
+        // Reset heartbeat timer (guard drops before .await)
+        {
+            *self.heartbeat_timer.lock().unwrap() =
+                Some(Instant::now() + self.config.heartbeat_interval);
+        }
 
         // Send initial heartbeats
         self.send_heartbeats().await?;
@@ -281,12 +396,7 @@ impl RaftNode {
 
             // Determine previous log index and term
             let prev_log_index = if next_idx > 0 { next_idx - 1 } else { 0 };
-            let prev_log_term = self
-                .log
-                .term_at(prev_log_index)
-                .ok()
-                .flatten()
-                .unwrap_or(0);
+            let prev_log_term = self.log.term_at(prev_log_index).ok().flatten().unwrap_or(0);
 
             // Get entries to send
             let entries: Vec<LogEntry> = self
@@ -309,13 +419,10 @@ impl RaftNode {
 
             let transport_clone = self.transport.clone();
             let state_clone = self.state.clone();
-            let log_clone = self.log.clone();
+            let _log_clone = self.log.clone();
 
             tokio::spawn(async move {
-                match transport_clone
-                    .send_append_entries(peer_id, request)
-                    .await
-                {
+                match transport_clone.send_append_entries(peer_id, request).await {
                     Ok(response) => {
                         if response.success {
                             state_clone.set_match_index(peer_id, response.match_index);
@@ -346,10 +453,7 @@ impl RaftNode {
         Ok(())
     }
 
-    pub async fn handle_append_entries(
-        &self,
-        req: AppendEntriesRequest,
-    ) -> AppendEntriesResponse {
+    pub async fn handle_append_entries(&self, req: AppendEntriesRequest) -> AppendEntriesResponse {
         let current_term = self.state.term();
 
         // Reply false if term < currentTerm
@@ -366,12 +470,14 @@ impl RaftNode {
         // If term > currentTerm, become follower
         if req.term > current_term {
             self.state.become_follower(req.term);
-            *self.election_timer.lock() = Some(Instant::now() + Self::random_election_timeout_static(&self.config));
+            *self.election_timer.lock().unwrap() =
+                Some(Instant::now() + Self::random_election_timeout_static(&self.config));
         }
 
         // Set leader_id
         self.state.set_leader_id(req.leader_id);
-        *self.election_timer.lock() = Some(Instant::now() + Self::random_election_timeout_static(&self.config));
+        *self.election_timer.lock().unwrap() =
+            Some(Instant::now() + Self::random_election_timeout_static(&self.config));
 
         // Check if we have the prev_log_entry
         if !self.log.has_entry(req.prev_log_index, req.prev_log_term) {
@@ -441,10 +547,7 @@ impl RaftNode {
         }
     }
 
-    pub async fn handle_request_vote(
-        &self,
-        req: RequestVoteRequest,
-    ) -> RequestVoteResponse {
+    pub async fn handle_request_vote(&self, req: RequestVoteRequest) -> RequestVoteResponse {
         let current_term = self.state.term();
 
         // Reply false if term < currentTerm
@@ -475,7 +578,8 @@ impl RaftNode {
 
         if vote_granted && !req.pre_vote {
             self.state.vote_for(req.candidate_id);
-            *self.election_timer.lock() = Some(Instant::now() + Self::random_election_timeout_static(&self.config));
+            *self.election_timer.lock().unwrap() =
+                Some(Instant::now() + Self::random_election_timeout_static(&self.config));
         }
 
         RequestVoteResponse {
@@ -491,9 +595,7 @@ impl RaftNode {
         let current_term = self.state.term();
 
         if req.term < current_term {
-            return InstallSnapshotResponse {
-                term: current_term,
-            };
+            return InstallSnapshotResponse { term: current_term };
         }
 
         if req.term > current_term {
@@ -501,7 +603,8 @@ impl RaftNode {
         }
 
         self.state.set_leader_id(req.leader_id);
-        *self.election_timer.lock() = Some(Instant::now() + Self::random_election_timeout_static(&self.config));
+        *self.election_timer.lock().unwrap() =
+            Some(Instant::now() + Self::random_election_timeout_static(&self.config));
 
         // In a real implementation, we'd stream the snapshot data
         if req.done {
@@ -510,9 +613,7 @@ impl RaftNode {
                 .save_snapshot(req.last_included_index, req.last_included_term);
         }
 
-        InstallSnapshotResponse {
-            term: current_term,
-        }
+        InstallSnapshotResponse { term: current_term }
     }
 
     pub async fn propose(&self, data: Vec<u8>) -> RaftResult<()> {
@@ -551,16 +652,12 @@ impl RaftNode {
     async fn trigger_snapshot(&self) -> RaftResult<()> {
         // In a real implementation, this would save a snapshot to disk
         // For now, just truncate the log
-        let snapshot_index = self.log.last_index().saturating_sub(
-            self.config.snapshot_threshold / 2,
-        );
+        let snapshot_index = self
+            .log
+            .last_index()
+            .saturating_sub(self.config.snapshot_threshold / 2);
         if snapshot_index > self.log.snapshot_index() {
-            let snapshot_term = self
-                .log
-                .term_at(snapshot_index)
-                .ok()
-                .flatten()
-                .unwrap_or(0);
+            let snapshot_term = self.log.term_at(snapshot_index).ok().flatten().unwrap_or(0);
             self.log.save_snapshot(snapshot_index, snapshot_term)?;
             self.log.truncate_before(snapshot_index + 1)?;
         }
@@ -592,12 +689,15 @@ impl RaftNode {
     }
 
     pub fn run(self: Arc<Self>) -> JoinHandle<()> {
-        // TODO: Fix Send trait issue with parking_lot::Mutex
-        // The problem is that parking_lot::Mutex guards are not Send
-        // We should use tokio::sync::Mutex instead
-        // For now, return a dummy handle
-        tokio::spawn(async {
-            // Placeholder
+        tokio::spawn(async move {
+            info!("Raft event loop started (node {})", self.config.id);
+            let mut interval = tokio::time::interval(Duration::from_millis(10));
+            loop {
+                interval.tick().await;
+                if let Err(e) = self.tick().await {
+                    warn!("Raft tick error: {}", e);
+                }
+            }
         })
     }
 
@@ -647,7 +747,9 @@ impl RaftNode {
             entry_type: crate::raft::log::EntryType::Normal,
         };
 
-        self.log.append(&[entry]).map_err(|e| RaftError::LogError(format!("{}", e)))?;
+        self.log
+            .append(&[entry])
+            .map_err(|e| RaftError::LogError(format!("{}", e)))?;
         Ok(())
     }
 

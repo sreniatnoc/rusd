@@ -1,12 +1,12 @@
-use tonic::{Request, Response, Status, Code};
 use std::sync::Arc;
-use tokio_stream::wrappers::ReceiverStream;
 use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
+use tonic::{Code, Request, Response, Status};
 
-use crate::etcdserverpb::*;
 use crate::etcdserverpb::maintenance_server::Maintenance;
-use crate::storage::mvcc::MvccStore;
+use crate::etcdserverpb::*;
 use crate::raft::node::RaftNode;
+use crate::storage::mvcc::MvccStore;
 
 pub struct MaintenanceService {
     store: Arc<MvccStore>,
@@ -70,10 +70,7 @@ impl Maintenance for MaintenanceService {
     ) -> Result<Response<DefragmentResponse>, Status> {
         // Check if leader
         if !self.raft.is_leader() {
-            return Err(Status::new(
-                Code::FailedPrecondition,
-                "not a leader",
-            ));
+            return Err(Status::new(Code::FailedPrecondition, "not a leader"));
         }
 
         // TODO: Implement defragmentation
@@ -84,10 +81,7 @@ impl Maintenance for MaintenanceService {
         Ok(Response::new(response))
     }
 
-    async fn hash(
-        &self,
-        _request: Request<HashRequest>,
-    ) -> Result<Response<HashResponse>, Status> {
+    async fn hash(&self, _request: Request<HashRequest>) -> Result<Response<HashResponse>, Status> {
         // TODO: Implement hash computation
         let response = HashResponse {
             header: Some(self.build_response_header()),
@@ -124,10 +118,10 @@ impl Maintenance for MaintenanceService {
 
     async fn snapshot(
         &self,
-        request: Request<SnapshotRequest>,
+        _request: Request<SnapshotRequest>,
     ) -> Result<Response<Self::SnapshotStream>, Status> {
         let (tx, rx) = mpsc::channel(128);
-        let store = self.store.clone();
+        let _store = self.store.clone();
 
         tokio::spawn(async move {
             // TODO: Implement snapshot creation
@@ -157,10 +151,7 @@ impl Maintenance for MaintenanceService {
 
         // Check if leader
         if !self.raft.is_leader() {
-            return Err(Status::new(
-                Code::FailedPrecondition,
-                "not a leader",
-            ));
+            return Err(Status::new(Code::FailedPrecondition, "not a leader"));
         }
 
         // TODO: Implement leadership transfer
@@ -181,10 +172,7 @@ impl Maintenance for MaintenanceService {
 
         // Check if leader
         if !self.raft.is_leader() {
-            return Err(Status::new(
-                Code::FailedPrecondition,
-                "not a leader",
-            ));
+            return Err(Status::new(Code::FailedPrecondition, "not a leader"));
         }
 
         // Validate target version
@@ -198,7 +186,8 @@ impl Maintenance for MaintenanceService {
         // Propose downgrade to Raft
         let downgrade_cmd = format!("DOWNGRADE:{}", req.target_version);
 
-        self.raft.propose(downgrade_cmd.into_bytes())
+        self.raft
+            .propose(downgrade_cmd.into_bytes())
             .await
             .map_err(|e| Status::new(Code::Internal, format!("downgrade failed: {}", e)))?;
 

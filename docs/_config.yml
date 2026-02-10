@@ -1,0 +1,17 @@
+title: rusd
+description: A high-performance Rust replacement for etcd
+baseurl: "/rusd"
+url: "https://sreniatnoc.github.io"
+theme: jekyll-theme-midnight
+plugins:
+  - jekyll-relative-links
+
+relative_links:
+  enabled: true
+  collections: true
+
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: default

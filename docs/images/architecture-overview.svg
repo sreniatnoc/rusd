@@ -1,0 +1,220 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 600" width="900" height="600">
+  <defs>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap');
+      text { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; }
+    </style>
+    <filter id="shadow" x="-4%" y="-4%" width="108%" height="108%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#000" flood-opacity="0.3"/>
+    </filter>
+    <linearGradient id="orangeGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#f97316;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#ea580c;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="blueGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#6366f1;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#4f46e5;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="greenGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#22c55e;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#16a34a;stop-opacity:1" />
+    </linearGradient>
+    <marker id="arrowOrange" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto" markerUnits="strokeWidth">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#f97316"/>
+    </marker>
+    <marker id="arrowBlue" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto" markerUnits="strokeWidth">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#6366f1"/>
+    </marker>
+    <marker id="arrowGreen" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto" markerUnits="strokeWidth">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#22c55e"/>
+    </marker>
+    <marker id="arrowSlate" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto" markerUnits="strokeWidth">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#94a3b8"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="900" height="600" rx="0" fill="#0f172a"/>
+
+  <!-- Title -->
+  <text x="450" y="36" text-anchor="middle" fill="#f8fafc" font-size="18" font-weight="700" letter-spacing="0.5">rusd System Architecture</text>
+  <text x="450" y="54" text-anchor="middle" fill="#64748b" font-size="11" font-weight="400">etcd-compatible distributed key-value store in Rust</text>
+
+  <!-- ==================== CLIENT API LAYER ==================== -->
+  <rect x="30" y="72" width="840" height="68" rx="10" fill="#1e293b" stroke="#334155" stroke-width="1" filter="url(#shadow)"/>
+  <text x="50" y="92" fill="#94a3b8" font-size="10" font-weight="600" letter-spacing="1">gRPC CLIENT API</text>
+
+  <!-- API service boxes -->
+  <rect x="50" y="100" width="110" height="30" rx="6" fill="url(#orangeGrad)" opacity="0.9"/>
+  <text x="105" y="119" text-anchor="middle" fill="#fff" font-size="11" font-weight="600">KV Service</text>
+
+  <rect x="172" y="100" width="110" height="30" rx="6" fill="url(#orangeGrad)" opacity="0.9"/>
+  <text x="227" y="119" text-anchor="middle" fill="#fff" font-size="11" font-weight="600">Watch Service</text>
+
+  <rect x="294" y="100" width="110" height="30" rx="6" fill="url(#orangeGrad)" opacity="0.9"/>
+  <text x="349" y="119" text-anchor="middle" fill="#fff" font-size="11" font-weight="600">Lease Service</text>
+
+  <rect x="416" y="100" width="110" height="30" rx="6" fill="url(#orangeGrad)" opacity="0.9"/>
+  <text x="471" y="119" text-anchor="middle" fill="#fff" font-size="11" font-weight="600">Auth Service</text>
+
+  <rect x="538" y="100" width="120" height="30" rx="6" fill="url(#orangeGrad)" opacity="0.9"/>
+  <text x="598" y="119" text-anchor="middle" fill="#fff" font-size="11" font-weight="600">Cluster Service</text>
+
+  <rect x="670" y="100" width="180" height="30" rx="6" fill="url(#orangeGrad)" opacity="0.9"/>
+  <text x="760" y="119" text-anchor="middle" fill="#fff" font-size="11" font-weight="600">Maintenance Service</text>
+
+  <!-- ==================== MIDDLE LAYER: MVCC + RAFT ==================== -->
+
+  <!-- Arrows from API to MVCC -->
+  <line x1="105" y1="130" x2="230" y2="172" stroke="#f97316" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arrowOrange)"/>
+  <line x1="227" y1="130" x2="230" y2="172" stroke="#f97316" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arrowOrange)"/>
+
+  <!-- Arrow from API to Raft -->
+  <line x1="349" y1="130" x2="620" y2="172" stroke="#6366f1" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arrowBlue)"/>
+
+  <!-- MVCC Store -->
+  <rect x="30" y="172" width="420" height="200" rx="10" fill="#1e293b" stroke="#f97316" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="50" y="194" fill="#f97316" font-size="12" font-weight="700" letter-spacing="0.5">MVCC STORE</text>
+  <text x="195" y="194" fill="#64748b" font-size="9" font-weight="400">(Multi-Version Concurrency Control)</text>
+
+  <!-- Revision Counter -->
+  <rect x="50" y="206" width="160" height="34" rx="6" fill="#0f172a" stroke="#475569" stroke-width="1"/>
+  <text x="130" y="220" text-anchor="middle" fill="#cbd5e1" font-size="10" font-weight="500">Revision Counter</text>
+  <text x="130" y="233" text-anchor="middle" fill="#64748b" font-size="9">AtomicI64 (SeqCst)</text>
+
+  <!-- KeyIndex (in-memory) -->
+  <rect x="224" y="206" width="210" height="34" rx="6" fill="#0f172a" stroke="#475569" stroke-width="1"/>
+  <text x="329" y="220" text-anchor="middle" fill="#cbd5e1" font-size="10" font-weight="500">In-Memory KeyIndex</text>
+  <text x="329" y="233" text-anchor="middle" fill="#64748b" font-size="9">key -> [Revision history]</text>
+
+  <!-- kv tree box -->
+  <rect x="50" y="252" width="185" height="50" rx="6" fill="#0f172a" stroke="#22c55e" stroke-width="1.2"/>
+  <text x="142" y="270" text-anchor="middle" fill="#22c55e" font-size="11" font-weight="600">kv tree</text>
+  <text x="142" y="284" text-anchor="middle" fill="#94a3b8" font-size="9">key = {key}</text>
+  <text x="142" y="296" text-anchor="middle" fill="#64748b" font-size="8">Latest value, key-indexed</text>
+
+  <!-- kv_rev tree box -->
+  <rect x="249" y="252" width="185" height="50" rx="6" fill="#0f172a" stroke="#22c55e" stroke-width="1.2"/>
+  <text x="341" y="270" text-anchor="middle" fill="#22c55e" font-size="11" font-weight="600">kv_rev tree</text>
+  <text x="341" y="284" text-anchor="middle" fill="#94a3b8" font-size="9">key = {rev_be}{key}</text>
+  <text x="341" y="296" text-anchor="middle" fill="#64748b" font-size="8">Historical, revision-indexed</text>
+
+  <!-- Dual-write arrows -->
+  <text x="240" y="318" text-anchor="middle" fill="#475569" font-size="9" font-weight="500" font-style="italic">dual-write on every PUT</text>
+
+  <!-- Compaction -->
+  <rect x="50" y="328" width="383" height="30" rx="6" fill="#0f172a" stroke="#475569" stroke-width="1" stroke-dasharray="3,2"/>
+  <text x="242" y="347" text-anchor="middle" fill="#64748b" font-size="10" font-weight="500">Compaction Engine  (removes revisions &lt; compact_revision)</text>
+
+  <!-- ==================== RAFT CONSENSUS ==================== -->
+  <rect x="470" y="172" width="400" height="200" rx="10" fill="#1e293b" stroke="#6366f1" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="490" y="194" fill="#6366f1" font-size="12" font-weight="700" letter-spacing="0.5">RAFT CONSENSUS</text>
+
+  <!-- RaftNode -->
+  <rect x="490" y="206" width="170" height="34" rx="6" fill="#0f172a" stroke="#475569" stroke-width="1"/>
+  <text x="575" y="220" text-anchor="middle" fill="#cbd5e1" font-size="10" font-weight="500">RaftNode</text>
+  <text x="575" y="233" text-anchor="middle" fill="#64748b" font-size="9">tick(), propose(), step()</text>
+
+  <!-- RaftState -->
+  <rect x="674" y="206" width="180" height="34" rx="6" fill="#0f172a" stroke="#475569" stroke-width="1"/>
+  <text x="764" y="220" text-anchor="middle" fill="#cbd5e1" font-size="10" font-weight="500">RaftState</text>
+  <text x="764" y="233" text-anchor="middle" fill="#64748b" font-size="9">Leader / Follower / Candidate</text>
+
+  <!-- Leader Election -->
+  <rect x="490" y="252" width="170" height="44" rx="6" fill="#0f172a" stroke="#6366f1" stroke-width="1"/>
+  <text x="575" y="268" text-anchor="middle" fill="#818cf8" font-size="10" font-weight="600">Leader Election</text>
+  <text x="575" y="280" text-anchor="middle" fill="#64748b" font-size="9">PreVote + RequestVote</text>
+  <text x="575" y="291" text-anchor="middle" fill="#64748b" font-size="8">random timeout [150-300ms]</text>
+
+  <!-- Log Replication -->
+  <rect x="674" y="252" width="180" height="44" rx="6" fill="#0f172a" stroke="#6366f1" stroke-width="1"/>
+  <text x="764" y="268" text-anchor="middle" fill="#818cf8" font-size="10" font-weight="600">Log Replication</text>
+  <text x="764" y="280" text-anchor="middle" fill="#64748b" font-size="9">AppendEntries RPC</text>
+  <text x="764" y="291" text-anchor="middle" fill="#64748b" font-size="8">commit on majority ack</text>
+
+  <!-- gRPC Transport -->
+  <rect x="490" y="308" width="363" height="34" rx="6" fill="#0f172a" stroke="#475569" stroke-width="1"/>
+  <text x="671" y="322" text-anchor="middle" fill="#cbd5e1" font-size="10" font-weight="500">GrpcTransport (Peer RPC)</text>
+  <text x="671" y="335" text-anchor="middle" fill="#64748b" font-size="9">raftpb.proto: AppendEntries | RequestVote | InstallSnapshot</text>
+
+  <!-- Raft Log -->
+  <rect x="490" y="350" width="363" height="12" rx="3" fill="#4f46e5" opacity="0.3"/>
+  <text x="671" y="360" text-anchor="middle" fill="#a5b4fc" font-size="8" font-weight="500">RaftLog  (in-memory Vec + snapshot)</text>
+
+  <!-- ==================== BOTTOM LAYER ==================== -->
+
+  <!-- Arrow MVCC -> Watch Hub -->
+  <line x1="240" y1="372" x2="240" y2="408" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrowGreen)"/>
+  <text x="252" y="395" fill="#22c55e" font-size="8" font-weight="500">notify</text>
+
+  <!-- Arrow MVCC -> sled -->
+  <line x1="140" y1="372" x2="140" y2="508" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arrowSlate)"/>
+
+  <!-- Arrow MVCC -> sled (kv_rev) -->
+  <line x1="340" y1="372" x2="340" y2="508" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arrowSlate)"/>
+
+  <!-- Watch Hub -->
+  <rect x="30" y="410" width="260" height="80" rx="10" fill="#1e293b" stroke="#22c55e" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="50" y="432" fill="#22c55e" font-size="12" font-weight="700" letter-spacing="0.5">WATCH HUB</text>
+
+  <rect x="50" y="440" width="100" height="24" rx="5" fill="#0f172a" stroke="#475569" stroke-width="1"/>
+  <text x="100" y="456" text-anchor="middle" fill="#cbd5e1" font-size="9" font-weight="500">DashMap</text>
+
+  <rect x="160" y="440" width="114" height="24" rx="5" fill="#0f172a" stroke="#475569" stroke-width="1"/>
+  <text x="217" y="456" text-anchor="middle" fill="#cbd5e1" font-size="9" font-weight="500">crossbeam chan</text>
+
+  <text x="160" y="480" fill="#64748b" font-size="9">event dispatch to watchers</text>
+
+  <!-- Lease Manager -->
+  <rect x="310" y="410" width="250" height="80" rx="10" fill="#1e293b" stroke="#f97316" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="330" y="432" fill="#f97316" font-size="12" font-weight="700" letter-spacing="0.5">LEASE MANAGER</text>
+
+  <rect x="330" y="440" width="100" height="24" rx="5" fill="#0f172a" stroke="#475569" stroke-width="1"/>
+  <text x="380" y="456" text-anchor="middle" fill="#cbd5e1" font-size="9" font-weight="500">BinaryHeap</text>
+
+  <rect x="440" y="440" width="100" height="24" rx="5" fill="#0f172a" stroke="#475569" stroke-width="1"/>
+  <text x="490" y="456" text-anchor="middle" fill="#cbd5e1" font-size="9" font-weight="500">TTL tracking</text>
+
+  <text x="435" y="480" text-anchor="middle" fill="#64748b" font-size="9">grant / revoke / renew / expiry</text>
+
+  <!-- Auth Manager -->
+  <rect x="580" y="410" width="290" height="80" rx="10" fill="#1e293b" stroke="#475569" stroke-width="1.2" filter="url(#shadow)"/>
+  <text x="600" y="432" fill="#94a3b8" font-size="12" font-weight="700" letter-spacing="0.5">AUTH + CLUSTER</text>
+
+  <rect x="600" y="440" width="110" height="24" rx="5" fill="#0f172a" stroke="#475569" stroke-width="1"/>
+  <text x="655" y="456" text-anchor="middle" fill="#cbd5e1" font-size="9" font-weight="500">Users / Roles</text>
+
+  <rect x="720" y="440" width="130" height="24" rx="5" fill="#0f172a" stroke="#475569" stroke-width="1"/>
+  <text x="785" y="456" text-anchor="middle" fill="#cbd5e1" font-size="9" font-weight="500">Member Mgmt</text>
+
+  <text x="725" y="480" text-anchor="middle" fill="#64748b" font-size="9">RBAC + cluster membership</text>
+
+  <!-- ==================== SLED BACKEND ==================== -->
+  <rect x="30" y="510" width="840" height="70" rx="10" fill="#1e293b" stroke="#475569" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="50" y="534" fill="#94a3b8" font-size="12" font-weight="700" letter-spacing="1">SLED BACKEND STORAGE</text>
+  <text x="270" y="534" fill="#475569" font-size="10" font-weight="400">(embedded B+ tree database)</text>
+
+  <!-- Tree boxes -->
+  <rect x="50" y="544" width="80" height="24" rx="5" fill="#22c55e" opacity="0.15" stroke="#22c55e" stroke-width="0.8"/>
+  <text x="90" y="560" text-anchor="middle" fill="#22c55e" font-size="10" font-weight="600">kv</text>
+
+  <rect x="142" y="544" width="80" height="24" rx="5" fill="#22c55e" opacity="0.15" stroke="#22c55e" stroke-width="0.8"/>
+  <text x="182" y="560" text-anchor="middle" fill="#22c55e" font-size="10" font-weight="600">kv_rev</text>
+
+  <rect x="234" y="544" width="80" height="24" rx="5" fill="#475569" opacity="0.3" stroke="#475569" stroke-width="0.8"/>
+  <text x="274" y="560" text-anchor="middle" fill="#94a3b8" font-size="10" font-weight="500">index</text>
+
+  <rect x="326" y="544" width="80" height="24" rx="5" fill="#475569" opacity="0.3" stroke="#475569" stroke-width="0.8"/>
+  <text x="366" y="560" text-anchor="middle" fill="#94a3b8" font-size="10" font-weight="500">meta</text>
+
+  <rect x="418" y="544" width="80" height="24" rx="5" fill="#475569" opacity="0.3" stroke="#475569" stroke-width="0.8"/>
+  <text x="458" y="560" text-anchor="middle" fill="#94a3b8" font-size="10" font-weight="500">lease</text>
+
+  <rect x="510" y="544" width="80" height="24" rx="5" fill="#475569" opacity="0.3" stroke="#475569" stroke-width="0.8"/>
+  <text x="550" y="560" text-anchor="middle" fill="#94a3b8" font-size="10" font-weight="500">auth</text>
+
+  <!-- Disk icon area -->
+  <rect x="680" y="540" width="170" height="30" rx="6" fill="#0f172a" stroke="#475569" stroke-width="1"/>
+  <text x="765" y="555" text-anchor="middle" fill="#64748b" font-size="9" font-weight="500">lock-free B+ tree on disk</text>
+  <text x="765" y="566" text-anchor="middle" fill="#475569" font-size="8">configurable page cache (256MB)</text>
+</svg>

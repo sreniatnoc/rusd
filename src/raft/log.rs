@@ -1,6 +1,6 @@
+use super::{RaftError, Result as RaftResult};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
-use super::{Result as RaftResult, RaftError};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LogEntry {
@@ -102,14 +102,8 @@ impl RaftLog {
 
         // Update last_index and last_term
         let last_entry = &entries[entries.len() - 1];
-        batch.insert(
-            b"last_index",
-            last_entry.index.to_le_bytes().to_vec(),
-        );
-        batch.insert(
-            b"last_term",
-            last_entry.term.to_le_bytes().to_vec(),
-        );
+        batch.insert(b"last_index", last_entry.index.to_le_bytes().to_vec());
+        batch.insert(b"last_term", last_entry.term.to_le_bytes().to_vec());
 
         self.db
             .apply_batch(batch)

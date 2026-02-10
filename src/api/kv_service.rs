@@ -1,11 +1,11 @@
-use tonic::{Request, Response, Status, Code};
 use std::sync::Arc;
+use tonic::{Code, Request, Response, Status};
 
-use crate::etcdserverpb::*;
 use crate::etcdserverpb::kv_server::Kv;
 use crate::etcdserverpb::response_op;
-use crate::storage::mvcc::MvccStore;
+use crate::etcdserverpb::*;
 use crate::raft::node::RaftNode;
+use crate::storage::mvcc::MvccStore;
 use crate::watch::WatchHub;
 
 pub struct KvService {
@@ -16,7 +16,11 @@ pub struct KvService {
 
 impl KvService {
     pub fn new(store: Arc<MvccStore>, raft: Arc<RaftNode>, watch_hub: Arc<WatchHub>) -> Self {
-        Self { store, raft, watch_hub }
+        Self {
+            store,
+            raft,
+            watch_hub,
+        }
     }
 
     fn build_response_header(&self) -> ResponseHeader {
@@ -52,12 +56,15 @@ impl KvService {
 
     /// Evaluates a single Compare operation for txn.
     fn evaluate_compare(&self, cmp: &Compare, current_revision: i64) -> bool {
-        use crate::etcdserverpb::compare::{CompareResult, CompareTarget, TargetUnion};
+        use crate::etcdserverpb::compare::{CompareResult, TargetUnion};
 
         // Look up the key
         let mut range_end = cmp.key.clone();
         range_end.push(0);
-        let kv = match self.store.range(&cmp.key, &range_end, current_revision, 1, false) {
+        let kv = match self
+            .store
+            .range(&cmp.key, &range_end, current_revision, 1, false)
+        {
             Ok(result) => result.kvs.into_iter().next(),
             Err(_) => None,
         };
@@ -92,7 +99,11 @@ impl KvService {
         }
     }
 
-    fn compare_i64(actual: i64, target: i64, result: crate::etcdserverpb::compare::CompareResult) -> bool {
+    fn compare_i64(
+        actual: i64,
+        target: i64,
+        result: crate::etcdserverpb::compare::CompareResult,
+    ) -> bool {
         use crate::etcdserverpb::compare::CompareResult;
         match result {
             CompareResult::Equal => actual == target,
@@ -102,7 +113,11 @@ impl KvService {
         }
     }
 
-    fn compare_bytes(actual: &[u8], target: &[u8], result: crate::etcdserverpb::compare::CompareResult) -> bool {
+    fn compare_bytes(
+        actual: &[u8],
+        target: &[u8],
+        result: crate::etcdserverpb::compare::CompareResult,
+    ) -> bool {
         use crate::etcdserverpb::compare::CompareResult;
         match result {
             CompareResult::Equal => actual == target,
@@ -123,10 +138,7 @@ impl Kv for KvService {
 
         // Validate input
         if req.key.is_empty() && req.range_end.is_empty() {
-            return Err(Status::new(
-                Code::InvalidArgument,
-                "key must not be empty",
-            ));
+            return Err(Status::new(Code::InvalidArgument, "key must not be empty"));
         }
 
         // Determine the effective revision for read
@@ -172,9 +184,10 @@ impl Kv for KvService {
         // Apply sorting
         match req.sort_order {
             0 => { /* NONE - no sorting */ }
-            1 => { /* ASCEND */
+            1 => {
+                /* ASCEND */
                 match req.sort_target {
-                    0 => kvs.sort_by(|a, b| a.key.cmp(&b.key)), // KEY
+                    0 => kvs.sort_by(|a, b| a.key.cmp(&b.key)),     // KEY
                     1 => kvs.sort_by(|a, b| a.value.cmp(&b.value)), // VALUE
                     2 => kvs.sort_by(|a, b| a.create_revision.cmp(&b.create_revision)), // CREATE
                     3 => kvs.sort_by(|a, b| a.mod_revision.cmp(&b.mod_revision)), // MOD
@@ -182,9 +195,10 @@ impl Kv for KvService {
                     _ => {}
                 }
             }
-            2 => { /* DESCEND */
+            2 => {
+                /* DESCEND */
                 match req.sort_target {
-                    0 => kvs.sort_by(|a, b| b.key.cmp(&a.key)), // KEY
+                    0 => kvs.sort_by(|a, b| b.key.cmp(&a.key)),     // KEY
                     1 => kvs.sort_by(|a, b| b.value.cmp(&a.value)), // VALUE
                     2 => kvs.sort_by(|a, b| b.create_revision.cmp(&a.create_revision)), // CREATE
                     3 => kvs.sort_by(|a, b| b.mod_revision.cmp(&a.mod_revision)), // MOD
@@ -219,10 +233,7 @@ impl Kv for KvService {
         Ok(Response::new(response))
     }
 
-    async fn put(
-        &self,
-        request: Request<PutRequest>,
-    ) -> Result<Response<PutResponse>, Status> {
+    async fn put(&self, request: Request<PutRequest>) -> Result<Response<PutResponse>, Status> {
         let req = request.into_inner();
 
         // Validate input
@@ -232,29 +243,28 @@ impl Kv for KvService {
 
         // Check if leader
         if !self.raft.is_leader() {
-            return Err(Status::new(
-                Code::FailedPrecondition,
-                "not a leader",
-            ));
+            return Err(Status::new(Code::FailedPrecondition, "not a leader"));
         }
 
         // Propose to Raft
         // TODO: Use proper proto encoding for proposals instead of bincode
-        let proposal_data = format!("PUT:{}:{}",
+        let proposal_data = format!(
+            "PUT:{}:{}",
             String::from_utf8_lossy(&req.key),
             String::from_utf8_lossy(&req.value)
         );
 
-        let _result = self.raft.propose(proposal_data.into_bytes())
+        let _result = self
+            .raft
+            .propose(proposal_data.into_bytes())
             .await
             .map_err(|e| Status::new(Code::Internal, format!("raft proposal failed: {}", e)))?;
 
         // Apply the put operation to the store
-        let (new_revision, kv, old_kv) = self.store.put(
-            &req.key,
-            &req.value,
-            req.lease,
-        ).map_err(|e| Status::new(Code::Internal, format!("put failed: {}", e)))?;
+        let (new_revision, kv, old_kv) = self
+            .store
+            .put(&req.key, &req.value, req.lease)
+            .map_err(|e| Status::new(Code::Internal, format!("put failed: {}", e)))?;
 
         // Notify watchers of the put event (include prev_kv for K8s compatibility)
         let watch_prev = old_kv.as_ref().map(|k| Self::to_watch_kv(k));
@@ -293,10 +303,7 @@ impl Kv for KvService {
 
         // Check if leader
         if !self.raft.is_leader() {
-            return Err(Status::new(
-                Code::FailedPrecondition,
-                "not a leader",
-            ));
+            return Err(Status::new(Code::FailedPrecondition, "not a leader"));
         }
 
         // Get previous values if requested
@@ -330,12 +337,14 @@ impl Kv for KvService {
 
         // Propose to Raft
         // TODO: Use proper proto encoding for proposals
-        let proposal_data = format!("DELETE:{}:{}",
+        let proposal_data = format!(
+            "DELETE:{}:{}",
             String::from_utf8_lossy(&req.key),
             String::from_utf8_lossy(&req.range_end)
         );
 
-        self.raft.propose(proposal_data.into_bytes())
+        self.raft
+            .propose(proposal_data.into_bytes())
             .await
             .map_err(|e| Status::new(Code::Internal, format!("raft proposal failed: {}", e)))?;
 
@@ -348,20 +357,21 @@ impl Kv for KvService {
         } else {
             req.range_end.clone()
         };
-        let (del_revision, deleted_kvs) = self.store.delete_range(
-            &req.key,
-            &effective_range_end,
-        ).map_err(|e| Status::new(Code::Internal, format!("delete failed: {}", e)))?;
+        let (del_revision, deleted_kvs) =
+            self.store
+                .delete_range(&req.key, &effective_range_end)
+                .map_err(|e| Status::new(Code::Internal, format!("delete failed: {}", e)))?;
 
         // Notify watchers of delete events (include prev_kv for K8s)
         if !deleted_kvs.is_empty() {
-            let delete_events: Vec<crate::watch::Event> = deleted_kvs.iter().map(|kv| {
-                crate::watch::Event {
+            let delete_events: Vec<crate::watch::Event> = deleted_kvs
+                .iter()
+                .map(|kv| crate::watch::Event {
                     event_type: crate::watch::EventType::Delete,
                     kv: Self::to_watch_kv(kv),
                     prev_kv: Some(Self::to_watch_kv(kv)),
-                }
-            }).collect();
+                })
+                .collect();
             let _ = self.watch_hub.notify(delete_events, del_revision, 0);
         }
 
@@ -374,26 +384,21 @@ impl Kv for KvService {
         Ok(Response::new(response))
     }
 
-    async fn txn(
-        &self,
-        request: Request<TxnRequest>,
-    ) -> Result<Response<TxnResponse>, Status> {
+    async fn txn(&self, request: Request<TxnRequest>) -> Result<Response<TxnResponse>, Status> {
         let req = request.into_inner();
 
         // Check if leader
         if !self.raft.is_leader() {
-            return Err(Status::new(
-                Code::FailedPrecondition,
-                "not a leader",
-            ));
+            return Err(Status::new(Code::FailedPrecondition, "not a leader"));
         }
 
         let current_revision = self.store.current_revision();
 
         // Evaluate all compare operations
-        let all_succeed = req.compare.iter().all(|cmp| {
-            self.evaluate_compare(cmp, current_revision)
-        });
+        let all_succeed = req
+            .compare
+            .iter()
+            .all(|cmp| self.evaluate_compare(cmp, current_revision));
 
         // Select success or failure operations
         let ops = if all_succeed {
@@ -426,12 +431,18 @@ impl Kv for KvService {
                             false,
                         ) {
                             Ok(range_result) => ResponseOp {
-                                response: Some(response_op::Response::ResponseRange(RangeResponse {
-                                    header: Some(self.build_response_header()),
-                                    kvs: range_result.kvs.into_iter().map(Self::convert_kv).collect(),
-                                    more: range_result.more,
-                                    count: range_result.count as i64,
-                                })),
+                                response: Some(response_op::Response::ResponseRange(
+                                    RangeResponse {
+                                        header: Some(self.build_response_header()),
+                                        kvs: range_result
+                                            .kvs
+                                            .into_iter()
+                                            .map(Self::convert_kv)
+                                            .collect(),
+                                        more: range_result.more,
+                                        count: range_result.count as i64,
+                                    },
+                                )),
                             },
                             Err(e) => {
                                 return Err(Status::new(
@@ -443,8 +454,12 @@ impl Kv for KvService {
                     }
                     request_op::Request::RequestPut(put_req) => {
                         // Execute put operation (returns prev_kv from store)
-                        let (txn_put_rev, txn_put_kv, txn_old_kv) = self.store.put(&put_req.key, &put_req.value, put_req.lease)
-                            .map_err(|e| Status::new(Code::Internal, format!("put in txn failed: {}", e)))?;
+                        let (txn_put_rev, txn_put_kv, txn_old_kv) = self
+                            .store
+                            .put(&put_req.key, &put_req.value, put_req.lease)
+                            .map_err(|e| {
+                                Status::new(Code::Internal, format!("put in txn failed: {}", e))
+                            })?;
 
                         // Notify watchers (include prev_kv for K8s)
                         let watch_prev = txn_old_kv.as_ref().map(|k| Self::to_watch_kv(k));
@@ -486,7 +501,9 @@ impl Kv for KvService {
                                 0,
                                 false,
                             ) {
-                                Ok(result) => result.kvs.into_iter().map(Self::convert_kv).collect(),
+                                Ok(result) => {
+                                    result.kvs.into_iter().map(Self::convert_kv).collect()
+                                }
                                 Err(e) => {
                                     return Err(Status::new(
                                         Code::Internal,
@@ -498,20 +515,23 @@ impl Kv for KvService {
                             vec![]
                         };
 
-                        let (txn_del_rev, deleted_kvs) = self.store.delete_range(
-                            &del_req.key,
-                            &effective_range_end,
-                        ).map_err(|e| Status::new(Code::Internal, format!("delete in txn failed: {}", e)))?;
+                        let (txn_del_rev, deleted_kvs) = self
+                            .store
+                            .delete_range(&del_req.key, &effective_range_end)
+                            .map_err(|e| {
+                                Status::new(Code::Internal, format!("delete in txn failed: {}", e))
+                            })?;
 
                         // Notify watchers (include prev_kv for K8s)
                         if !deleted_kvs.is_empty() {
-                            let delete_events: Vec<crate::watch::Event> = deleted_kvs.iter().map(|kv| {
-                                crate::watch::Event {
+                            let delete_events: Vec<crate::watch::Event> = deleted_kvs
+                                .iter()
+                                .map(|kv| crate::watch::Event {
                                     event_type: crate::watch::EventType::Delete,
                                     kv: Self::to_watch_kv(kv),
                                     prev_kv: Some(Self::to_watch_kv(kv)),
-                                }
-                            }).collect();
+                                })
+                                .collect();
                             let _ = self.watch_hub.notify(delete_events, txn_del_rev, 0);
                         }
 
@@ -561,14 +581,12 @@ impl Kv for KvService {
 
         // Check if leader
         if !self.raft.is_leader() {
-            return Err(Status::new(
-                Code::FailedPrecondition,
-                "not a leader",
-            ));
+            return Err(Status::new(Code::FailedPrecondition, "not a leader"));
         }
 
         // Perform compaction
-        self.store.compact(req.revision)
+        self.store
+            .compact(req.revision)
             .map_err(|e| Status::new(Code::Internal, format!("compaction failed: {}", e)))?;
 
         let response = CompactionResponse {

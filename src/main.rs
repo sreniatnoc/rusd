@@ -5,8 +5,8 @@
 
 use clap::Parser;
 use std::path::PathBuf;
+use tracing::{error, info};
 use tracing_subscriber::filter::EnvFilter;
-use tracing::{info, error};
 
 use rusd::server::{AutoCompactionMode, ClusterState, RusdServer, ServerConfig};
 
@@ -137,6 +137,35 @@ struct Args {
     /// 'trace' is for detailed low-level debugging.
     #[arg(long, default_value = "info")]
     log_level: String,
+
+    /// Path to TLS certificate file (PEM encoded).
+    /// When provided along with --key-file, the server uses TLS for client connections.
+    #[arg(long)]
+    cert_file: Option<String>,
+
+    /// Path to TLS private key file (PEM encoded).
+    #[arg(long)]
+    key_file: Option<String>,
+
+    /// Path to trusted CA certificate file for verifying client certificates.
+    /// When set, the server requires and verifies client TLS certificates (mTLS).
+    #[arg(long)]
+    trusted_ca_file: Option<String>,
+
+    /// Path to TLS certificate file for peer connections.
+    /// Falls back to --cert-file if not set.
+    #[arg(long)]
+    peer_cert_file: Option<String>,
+
+    /// Path to TLS private key file for peer connections.
+    /// Falls back to --key-file if not set.
+    #[arg(long)]
+    peer_key_file: Option<String>,
+
+    /// Path to trusted CA certificate for verifying peer certificates.
+    /// Falls back to --trusted-ca-file if not set.
+    #[arg(long)]
+    peer_trusted_ca_file: Option<String>,
 }
 
 #[tokio::main]
@@ -201,7 +230,10 @@ fn initialize_tracing(log_level: &str) -> anyhow::Result<()> {
 fn print_startup_banner(args: &Args) {
     let version = env!("CARGO_PKG_VERSION");
     println!("╔════════════════════════════════════════════════════════════╗");
-    println!("║           rusd v{}                                    ║", version);
+    println!(
+        "║           rusd v{}                                    ║",
+        version
+    );
     println!("║   A Rust replacement for etcd with K8s API parity        ║");
     println!("╚════════════════════════════════════════════════════════════╝");
     println!();
@@ -248,6 +280,12 @@ fn build_server_config(args: &Args) -> anyhow::Result<ServerConfig> {
         auto_compaction_mode,
         auto_compaction_retention: args.auto_compaction_retention.clone(),
         cache_size_mb: args.cache_size_mb,
+        tls_cert_file: args.cert_file.clone(),
+        tls_key_file: args.key_file.clone(),
+        tls_trusted_ca_file: args.trusted_ca_file.clone(),
+        peer_tls_cert_file: args.peer_cert_file.clone(),
+        peer_tls_key_file: args.peer_key_file.clone(),
+        peer_tls_trusted_ca_file: args.peer_trusted_ca_file.clone(),
     })
 }
 
@@ -263,15 +301,11 @@ fn parse_urls(urls_str: &str) -> Vec<String> {
 /// Set up signal handlers for graceful shutdown (SIGTERM, SIGINT).
 fn setup_signal_handlers() -> impl std::future::Future<Output = ()> {
     async {
-        let mut sigterm = tokio::signal::unix::signal(
-            tokio::signal::unix::SignalKind::terminate(),
-        )
-        .expect("failed to install SIGTERM handler");
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler");
 
-        let mut sigint = tokio::signal::unix::signal(
-            tokio::signal::unix::SignalKind::interrupt(),
-        )
-        .expect("failed to install SIGINT handler");
+        let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+            .expect("failed to install SIGINT handler");
 
         tokio::select! {
             _ = sigterm.recv() => {
@@ -297,19 +331,13 @@ mod tests {
     #[test]
     fn test_parse_urls_multiple() {
         let urls = parse_urls("http://localhost:2379,http://localhost:2380");
-        assert_eq!(
-            urls,
-            vec!["http://localhost:2379", "http://localhost:2380"]
-        );
+        assert_eq!(urls, vec!["http://localhost:2379", "http://localhost:2380"]);
     }
 
     #[test]
     fn test_parse_urls_with_whitespace() {
         let urls = parse_urls("http://localhost:2379 , http://localhost:2380");
-        assert_eq!(
-            urls,
-            vec!["http://localhost:2379", "http://localhost:2380"]
-        );
+        assert_eq!(urls, vec!["http://localhost:2379", "http://localhost:2380"]);
     }
 
     #[test]

@@ -4,11 +4,11 @@
 //! It tracks member information including peer URLs for Raft communication and
 //! client URLs for API servers.
 
-use std::sync::Arc;
 use parking_lot::RwLock;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use thiserror::Error;
-use tracing::{debug, info, warn};
+use tracing::debug;
 use uuid::Uuid;
 
 /// Cluster-related errors.
@@ -56,12 +56,7 @@ pub struct Member {
 
 impl Member {
     /// Creates a new member with the given parameters.
-    pub fn new(
-        id: u64,
-        name: String,
-        peer_urls: Vec<String>,
-        client_urls: Vec<String>,
-    ) -> Self {
+    pub fn new(id: u64, name: String, peer_urls: Vec<String>, client_urls: Vec<String>) -> Self {
         Member {
             id,
             name,
@@ -157,8 +152,7 @@ impl ClusterManager {
 
     /// Gets the current leader ID.
     pub fn leader_id(&self) -> u64 {
-        self.leader_id
-            .load(std::sync::atomic::Ordering::SeqCst)
+        self.leader_id.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Sets the current leader ID.
@@ -195,11 +189,7 @@ impl ClusterManager {
 
         members.insert(member_id, member.clone());
 
-        debug!(
-            member_id,
-            is_learner,
-            "Member added to cluster"
-        );
+        debug!(member_id, is_learner, "Member added to cluster");
 
         Ok(member)
     }
@@ -221,11 +211,7 @@ impl ClusterManager {
     }
 
     /// Updates a member's peer URLs.
-    pub fn update_member(
-        &self,
-        id: u64,
-        peer_urls: Vec<String>,
-    ) -> ClusterResult<Member> {
+    pub fn update_member(&self, id: u64, peer_urls: Vec<String>) -> ClusterResult<Member> {
         let mut members = self.members.write();
 
         if let Some(member) = members.get_mut(&id) {
@@ -247,9 +233,10 @@ impl ClusterManager {
 
         if let Some(member) = members.get_mut(&id) {
             if !member.is_learner {
-                return Err(ClusterError::InvalidConfig(
-                    format!("Member {} is not a learner", id),
-                ));
+                return Err(ClusterError::InvalidConfig(format!(
+                    "Member {} is not a learner",
+                    id
+                )));
             }
 
             member.is_learner = false;
@@ -271,9 +258,10 @@ impl ClusterManager {
 
         if let Some(member) = members.get_mut(&id) {
             if member.is_learner {
-                return Err(ClusterError::InvalidConfig(
-                    format!("Member {} is already a learner", id),
-                ));
+                return Err(ClusterError::InvalidConfig(format!(
+                    "Member {} is already a learner",
+                    id
+                )));
             }
 
             member.is_learner = true;
@@ -287,11 +275,7 @@ impl ClusterManager {
 
     /// Lists all members in the cluster.
     pub fn list_members(&self) -> Vec<Member> {
-        self.members
-            .read()
-            .values()
-            .cloned()
-            .collect()
+        self.members.read().values().cloned().collect()
     }
 
     /// Gets information about a specific member.
@@ -344,8 +328,7 @@ impl ClusterManager {
         let uuid = Uuid::new_v4();
         let bytes = uuid.as_bytes();
         u64::from_le_bytes([
-            bytes[0], bytes[1], bytes[2], bytes[3],
-            bytes[4], bytes[5], bytes[6], bytes[7],
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
         ])
     }
 
@@ -434,7 +417,7 @@ mod tests {
         assert_eq!(manager.voter_count(), 0);
 
         // Add 2 more voting members
-        let m2 = manager
+        let _m2 = manager
             .add_member(
                 "m2".to_string(),
                 vec!["http://localhost:2380".to_string()],
@@ -443,7 +426,7 @@ mod tests {
             )
             .unwrap();
 
-        let m3 = manager
+        let _m3 = manager
             .add_member(
                 "m3".to_string(),
                 vec!["http://localhost:2381".to_string()],
@@ -497,12 +480,7 @@ mod tests {
         );
         assert!(result.is_err());
 
-        let result = manager.add_member(
-            "test".to_string(),
-            vec![],
-            vec![],
-            false,
-        );
+        let result = manager.add_member("test".to_string(), vec![], vec![], false);
         assert!(result.is_err());
 
         let result = manager.add_member(

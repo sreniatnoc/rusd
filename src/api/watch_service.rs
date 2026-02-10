@@ -1,14 +1,14 @@
-use tonic::{Request, Response, Status, Code};
 use std::sync::Arc;
-use tokio_stream::wrappers::ReceiverStream;
 use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
+use tonic::{Code, Request, Response, Status};
 use tracing::{debug, warn};
 
-use crate::etcdserverpb::*;
 use crate::etcdserverpb::watch_server::Watch;
-use crate::storage::mvcc::MvccStore;
+use crate::etcdserverpb::*;
 use crate::raft::node::RaftNode;
-use crate::watch::{WatchHub, WatchFilter};
+use crate::storage::mvcc::MvccStore;
+use crate::watch::{WatchFilter, WatchHub};
 
 pub struct WatchService {
     store: Arc<MvccStore>,
@@ -18,7 +18,11 @@ pub struct WatchService {
 
 impl WatchService {
     pub fn new(store: Arc<MvccStore>, raft: Arc<RaftNode>, watch_hub: Arc<WatchHub>) -> Self {
-        Self { store, raft, watch_hub }
+        Self {
+            store,
+            raft,
+            watch_hub,
+        }
     }
 }
 
@@ -49,15 +53,18 @@ impl Watch for WatchService {
                                 watch_request::RequestUnion::CreateRequest(create_req) => {
                                     // Validate key
                                     if create_req.key.is_empty() {
-                                        let _ = tx.send(Err(Status::new(
-                                            Code::InvalidArgument,
-                                            "key must not be empty",
-                                        ))).await;
+                                        let _ = tx
+                                            .send(Err(Status::new(
+                                                Code::InvalidArgument,
+                                                "key must not be empty",
+                                            )))
+                                            .await;
                                         continue;
                                     }
 
                                     // Parse filters from proto i32 to WatchFilter
-                                    let filters: Vec<WatchFilter> = create_req.filters
+                                    let filters: Vec<WatchFilter> = create_req
+                                        .filters
                                         .iter()
                                         .filter_map(|f| match *f {
                                             0 => Some(WatchFilter::NoPut),
@@ -89,10 +96,12 @@ impl Watch for WatchService {
                                         Ok(id) => id,
                                         Err(e) => {
                                             warn!(error = %e, "Failed to create watch");
-                                            let _ = tx.send(Err(Status::new(
-                                                Code::Internal,
-                                                format!("failed to create watch: {}", e),
-                                            ))).await;
+                                            let _ = tx
+                                                .send(Err(Status::new(
+                                                    Code::Internal,
+                                                    format!("failed to create watch: {}", e),
+                                                )))
+                                                .await;
                                             continue;
                                         }
                                     };
@@ -127,7 +136,8 @@ impl Watch for WatchService {
                                     let forward_handle = tokio::spawn(async move {
                                         while let Some(watch_event) = watch_rx.recv().await {
                                             // Convert internal watch::Event -> proto Event
-                                            let events: Vec<Event> = watch_event.events
+                                            let events: Vec<Event> = watch_event
+                                                .events
                                                 .into_iter()
                                                 .map(|e| {
                                                     let event_type = match e.event_type {
@@ -156,7 +166,7 @@ impl Watch for WatchService {
                                                 })
                                                 .collect();
 
-                                            let is_progress = events.is_empty();
+                                            let _is_progress = events.is_empty();
 
                                             let response = WatchResponse {
                                                 header: Some(ResponseHeader {
@@ -244,10 +254,12 @@ impl Watch for WatchService {
                         break;
                     }
                     Err(e) => {
-                        let _ = tx.send(Err(Status::new(
-                            Code::Internal,
-                            format!("stream error: {}", e),
-                        ))).await;
+                        let _ = tx
+                            .send(Err(Status::new(
+                                Code::Internal,
+                                format!("stream error: {}", e),
+                            )))
+                            .await;
                         // Cancel all watches on error
                         for (watch_id, handle) in active_watches.drain() {
                             let _ = watch_hub.cancel_watch(watch_id);

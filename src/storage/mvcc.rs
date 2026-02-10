@@ -13,12 +13,12 @@
 //! 2. An in-memory index mapping keys to their revision history
 //! 3. Current and compact revision counters
 
-use crate::storage::{Backend, BackendError, KeyIndex, StorageError, StorageResult};
+use crate::storage::{Backend, KeyIndex, StorageError, StorageResult};
+use parking_lot::RwLock;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
-use parking_lot::RwLock;
 use std::time::Instant;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// A key-value pair with MVCC metadata.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,6 +57,65 @@ impl KeyValue {
         buf.extend_from_slice(&self.value);
 
         buf
+    }
+
+    /// Encodes the KeyValue with key included, for kv_rev tree storage.
+    fn encode_with_key(&self) -> Vec<u8> {
+        let mut buf = Vec::new();
+
+        buf.extend_from_slice(&self.create_revision.to_le_bytes());
+        buf.extend_from_slice(&self.mod_revision.to_le_bytes());
+        buf.extend_from_slice(&self.version.to_le_bytes());
+        buf.extend_from_slice(&self.lease.to_le_bytes());
+
+        buf.extend_from_slice(&(self.key.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&self.key);
+
+        buf.extend_from_slice(&(self.value.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&self.value);
+
+        buf
+    }
+
+    /// Deserializes a KeyValue from kv_rev tree bytes (key embedded in value).
+    fn decode_with_key(data: &[u8]) -> StorageResult<Self> {
+        if data.len() < 36 {
+            return Err(StorageError::Mvcc(
+                "Invalid KeyValue encoding (with key)".to_string(),
+            ));
+        }
+
+        let create_revision = i64::from_le_bytes(data[0..8].try_into().unwrap());
+        let mod_revision = i64::from_le_bytes(data[8..16].try_into().unwrap());
+        let version = i64::from_le_bytes(data[16..24].try_into().unwrap());
+        let lease = i64::from_le_bytes(data[24..32].try_into().unwrap());
+
+        let key_len = u32::from_le_bytes(data[32..36].try_into().unwrap()) as usize;
+        if 36 + key_len + 4 > data.len() {
+            return Err(StorageError::Mvcc(
+                "Invalid KeyValue encoding (key too long)".to_string(),
+            ));
+        }
+        let key = data[36..36 + key_len].to_vec();
+
+        let val_offset = 36 + key_len;
+        let value_len =
+            u32::from_le_bytes(data[val_offset..val_offset + 4].try_into().unwrap()) as usize;
+        if val_offset + 4 + value_len > data.len() {
+            return Err(StorageError::Mvcc(
+                "Invalid KeyValue encoding (value too long)".to_string(),
+            ));
+        }
+        let value = data[val_offset + 4..val_offset + 4 + value_len].to_vec();
+
+        Ok(KeyValue {
+            key,
+            create_revision,
+            mod_revision,
+            version,
+            value,
+            lease,
+        })
     }
 
     /// Deserializes a KeyValue from bytes.
@@ -111,6 +170,7 @@ pub struct RangeResult {
 
 /// A write operation to be batched.
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 enum WriteOp {
     Put {
         key: Vec<u8>,
@@ -173,9 +233,9 @@ impl MvccStore {
         info!("Initializing MVCC store");
 
         // Initialize key index from sled by scanning all existing data
-        let mut index = KeyIndex::new();
-        let mut current_revision = 1i64;
-        let mut compact_revision = 0i64;
+        let index = KeyIndex::new();
+        let current_revision = 1i64;
+        let compact_revision = 0i64;
 
         // Scan all existing keys and rebuild the index
         // In a real implementation, we might store revision metadata separately
@@ -189,10 +249,7 @@ impl MvccStore {
             write_batch: Arc::new(parking_lot::Mutex::new(WriteBatch::new())),
         });
 
-        info!(
-            "MVCC store initialized with revision={}",
-            current_revision
-        );
+        info!("MVCC store initialized with revision={}", current_revision);
 
         Ok(store)
     }
@@ -212,8 +269,22 @@ impl MvccStore {
         self.current_revision.fetch_add(1, Ordering::SeqCst) + 1
     }
 
+    /// Builds a kv_rev tree key: `{revision_be_bytes}{key_bytes}`.
+    /// Big-endian ensures natural sort order by revision.
+    fn rev_key(revision: i64, key: &[u8]) -> Vec<u8> {
+        let mut rk = Vec::with_capacity(8 + key.len());
+        rk.extend_from_slice(&revision.to_be_bytes());
+        rk.extend_from_slice(key);
+        rk
+    }
+
     /// Stores a single key-value pair, returning (revision, new_kv, prev_kv).
-    pub fn put(&self, key: &[u8], value: &[u8], lease: i64) -> StorageResult<(i64, KeyValue, Option<KeyValue>)> {
+    pub fn put(
+        &self,
+        key: &[u8],
+        value: &[u8],
+        lease: i64,
+    ) -> StorageResult<(i64, KeyValue, Option<KeyValue>)> {
         // Get the current revision of this key (if any)
         let index = self.key_index.read();
         let _current_version = index
@@ -243,7 +314,10 @@ impl MvccStore {
             create_revision: if version == 1 {
                 new_revision
             } else {
-                prev_kv.as_ref().map(|kv| kv.create_revision).unwrap_or(new_revision)
+                prev_kv
+                    .as_ref()
+                    .map(|kv| kv.create_revision)
+                    .unwrap_or(new_revision)
             },
             mod_revision: new_revision,
             version,
@@ -251,10 +325,16 @@ impl MvccStore {
             lease,
         };
 
-        // Store in backend (key only, revision tracked in index)
+        // Store latest in kv tree (overwrites previous)
         self.backend
             .put("kv", key, &kv.encode())
             .map_err(|_| StorageError::Mvcc("Backend put failed".to_string()))?;
+
+        // Store revision-indexed copy in kv_rev tree for historical reads
+        let rev_key = Self::rev_key(new_revision, key);
+        self.backend
+            .put("kv_rev", &rev_key, &kv.encode_with_key())
+            .map_err(|_| StorageError::Mvcc("Backend kv_rev put failed".to_string()))?;
 
         // Update index
         {
@@ -262,17 +342,17 @@ impl MvccStore {
             index.put(key, crate::storage::index::Revision::new(new_revision, 0));
         }
 
-        debug!("Put key {:?} at revision {}", String::from_utf8_lossy(key), new_revision);
+        debug!(
+            "Put key {:?} at revision {}",
+            String::from_utf8_lossy(key),
+            new_revision
+        );
 
         Ok((new_revision, kv, prev_kv))
     }
 
     /// Deletes a range of keys, returning the revision and deleted KeyValues.
-    pub fn delete_range(
-        &self,
-        start: &[u8],
-        end: &[u8],
-    ) -> StorageResult<(i64, Vec<KeyValue>)> {
+    pub fn delete_range(&self, start: &[u8], end: &[u8]) -> StorageResult<(i64, Vec<KeyValue>)> {
         // Allocate new revision
         let new_revision = self.next_revision();
 
@@ -295,11 +375,25 @@ impl MvccStore {
             }
         }
 
-        // Delete all keys from backend
+        // Delete all keys from kv tree and write tombstones to kv_rev
         for key in &keys_to_delete {
             self.backend
                 .delete("kv", key)
                 .map_err(|_| StorageError::Mvcc("Backend delete failed".to_string()))?;
+
+            // Write a tombstone entry to kv_rev for watch event delivery
+            let tombstone = KeyValue {
+                key: key.clone(),
+                create_revision: 0,
+                mod_revision: new_revision,
+                version: 0,
+                value: Vec::new(),
+                lease: 0,
+            };
+            let rev_key = Self::rev_key(new_revision, key);
+            self.backend
+                .put("kv_rev", &rev_key, &tombstone.encode_with_key())
+                .map_err(|_| StorageError::Mvcc("Backend kv_rev tombstone failed".to_string()))?;
         }
 
         // Update index
@@ -310,12 +404,20 @@ impl MvccStore {
             }
         }
 
-        debug!("Deleted {} keys at revision {}", deleted.len(), new_revision);
+        debug!(
+            "Deleted {} keys at revision {}",
+            deleted.len(),
+            new_revision
+        );
 
         Ok((new_revision, deleted))
     }
 
     /// Performs a range query at a specific revision.
+    ///
+    /// If revision is 0 or matches current, reads from the `kv` tree (latest values).
+    /// If a historical revision is requested, reads from `kv_rev` tree using the
+    /// index to find which revision of each key was valid at that point in time.
     pub fn range(
         &self,
         start: &[u8],
@@ -331,27 +433,41 @@ impl MvccStore {
             revision
         };
 
+        let is_current = revision <= 0 || revision >= self.current_revision();
+
         // Get keys from index at this revision
         let index = self.key_index.read();
         let keys = index.range(start, end, query_revision);
         drop(index);
 
-        let mut count = keys.len();
+        let count = keys.len();
         let mut kvs = Vec::new();
 
-        for (key, _rev) in keys {
+        for (key, rev) in keys {
             if limit > 0 && kvs.len() >= limit as usize {
                 break;
             }
 
-            // Get the value from backend
-            if let Ok(Some(kv_data)) = self.backend.get("kv", &key) {
-                if let Ok(kv) = KeyValue::decode(key, &kv_data) {
-                    // Verify the kv is valid at this revision
-                    if kv.create_revision <= query_revision && kv.mod_revision <= query_revision {
-                        if !count_only {
+            if count_only {
+                continue;
+            }
+
+            if is_current {
+                // Read latest from kv tree
+                if let Ok(Some(kv_data)) = self.backend.get("kv", &key) {
+                    if let Ok(kv) = KeyValue::decode(key, &kv_data) {
+                        if kv.create_revision <= query_revision && kv.mod_revision <= query_revision
+                        {
                             kvs.push(kv);
                         }
+                    }
+                }
+            } else {
+                // Historical read: look up the exact revision in kv_rev
+                let rev_key = Self::rev_key(rev.main, &key);
+                if let Ok(Some(kv_data)) = self.backend.get("kv_rev", &rev_key) {
+                    if let Ok(kv) = KeyValue::decode_with_key(&kv_data) {
+                        kvs.push(kv);
                     }
                 }
             }
@@ -359,11 +475,7 @@ impl MvccStore {
 
         let more = limit > 0 && count > kvs.len();
 
-        Ok(RangeResult {
-            kvs,
-            more,
-            count,
-        })
+        Ok(RangeResult { kvs, more, count })
     }
 
     /// Performs a transaction with compare-and-swap semantics.
@@ -373,7 +485,7 @@ impl MvccStore {
     pub fn txn(
         &self,
         _compares: Vec<()>,
-        success_ops: Vec<()>,
+        _success_ops: Vec<()>,
         _failure_ops: Vec<()>,
     ) -> StorageResult<()> {
         // Allocate revision for the transaction
@@ -417,10 +529,9 @@ impl MvccStore {
 
     /// Gets all events (changes) since a specific revision for watching.
     ///
-    /// Returns the KeyValues that were created or modified since start_revision.
+    /// Scans the kv_rev tree for all entries with revision >= start_revision,
+    /// returning Put or Delete events for watch catchup.
     pub fn watch_events(&self, start_revision: i64) -> StorageResult<Vec<Event>> {
-        // This is a simplified version that returns all changes
-        // A full implementation would maintain a change log
         let current = self.current_revision();
 
         if start_revision > current {
@@ -429,8 +540,30 @@ impl MvccStore {
 
         let mut events = Vec::new();
 
-        // In a real implementation, we'd maintain a change log for this
-        // For now, return empty (watches are typically maintained by the server)
+        // Scan kv_rev from start_revision onwards
+        let scan_start = start_revision.to_be_bytes();
+        let scan_end = (current + 1).to_be_bytes();
+
+        let entries = self
+            .backend
+            .scan("kv_rev", &scan_start, &scan_end, 0)
+            .map_err(|e| StorageError::Backend(e))?;
+
+        for (_rev_key, data) in entries {
+            if let Ok(kv) = KeyValue::decode_with_key(&data) {
+                let event_type = if kv.version == 0 && kv.value.is_empty() {
+                    "Delete".to_string()
+                } else {
+                    "Put".to_string()
+                };
+
+                events.push(Event {
+                    event_type,
+                    kv,
+                    prev_kv: None, // prev_kv would need additional lookup
+                });
+            }
+        }
 
         Ok(events)
     }
@@ -462,8 +595,8 @@ pub struct Event {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
     use crate::storage::BackendConfig;
+    use tempfile::TempDir;
 
     fn setup_store() -> Arc<MvccStore> {
         let temp_dir = TempDir::new().unwrap();
@@ -535,5 +668,87 @@ mod tests {
         let rev1 = store.current_revision();
 
         assert!(rev1 > rev0);
+    }
+
+    #[test]
+    fn test_historical_range_read() {
+        let store = setup_store();
+
+        let (rev1, _, _) = store.put(b"key1", b"value1", 0).unwrap();
+        let (rev2, _, _) = store.put(b"key1", b"value2", 0).unwrap();
+        let (_rev3, _, _) = store.put(b"key1", b"value3", 0).unwrap();
+
+        // Read at rev1 should return value1
+        let result = store.range(b"key1", b"key2", rev1, 10, false).unwrap();
+        assert_eq!(result.kvs.len(), 1);
+        assert_eq!(result.kvs[0].value, b"value1");
+
+        // Read at rev2 should return value2
+        let result = store.range(b"key1", b"key2", rev2, 10, false).unwrap();
+        assert_eq!(result.kvs.len(), 1);
+        assert_eq!(result.kvs[0].value, b"value2");
+
+        // Read at current (rev3) should return value3
+        let result = store.range(b"key1", b"key2", 0, 10, false).unwrap();
+        assert_eq!(result.kvs.len(), 1);
+        assert_eq!(result.kvs[0].value, b"value3");
+    }
+
+    #[test]
+    fn test_watch_events_from_revision() {
+        let store = setup_store();
+
+        let (rev1, _, _) = store.put(b"key1", b"value1", 0).unwrap();
+        let (rev2, _, _) = store.put(b"key2", b"value2", 0).unwrap();
+        let (_rev3, _, _) = store.put(b"key1", b"value1_updated", 0).unwrap();
+
+        // Get events from rev2 onwards (should get key2 put and key1 update)
+        let events = store.watch_events(rev2).unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].event_type, "Put");
+        assert_eq!(events[0].kv.key, b"key2");
+        assert_eq!(events[1].event_type, "Put");
+        assert_eq!(events[1].kv.key, b"key1");
+        assert_eq!(events[1].kv.value, b"value1_updated");
+
+        // Get events from rev1 onwards (should get all 3)
+        let events = store.watch_events(rev1).unwrap();
+        assert_eq!(events.len(), 3);
+    }
+
+    #[test]
+    fn test_watch_events_delete_tombstone() {
+        let store = setup_store();
+
+        let (_rev1, _, _) = store.put(b"key1", b"value1", 0).unwrap();
+        let (rev2, deleted) = store.delete_range(b"key1", b"key2").unwrap();
+        assert_eq!(deleted.len(), 1);
+
+        // Events from rev2 should contain the delete tombstone
+        let events = store.watch_events(rev2).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, "Delete");
+        assert_eq!(events[0].kv.key, b"key1");
+    }
+
+    #[test]
+    fn test_compact_removes_old_revisions() {
+        let store = setup_store();
+
+        let (rev1, _, _) = store.put(b"key1", b"value1", 0).unwrap();
+        let (rev2, _, _) = store.put(b"key1", b"value2", 0).unwrap();
+        let (_rev3, _, _) = store.put(b"key1", b"value3", 0).unwrap();
+
+        // Compact up to rev2 (should remove rev1)
+        store.compact(rev2).unwrap();
+
+        // Events from rev1 should no longer include rev1 entries (compacted)
+        let events = store.watch_events(rev1).unwrap();
+        // After compaction, only rev2 and rev3 remain
+        assert_eq!(events.len(), 2);
+
+        // Current read should still work
+        let result = store.range(b"key1", b"key2", 0, 10, false).unwrap();
+        assert_eq!(result.kvs[0].value, b"value3");
     }
 }

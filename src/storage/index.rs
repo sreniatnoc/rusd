@@ -71,8 +71,7 @@ impl KeyIndexEntry {
         // Find the generation that was created before or at this revision
         // and deleted after this revision (or not deleted yet)
         self.generations.iter().find(|gen| {
-            gen.created.main <= revision
-                && gen.deleted.map_or(true, |del| del.main > revision)
+            gen.created.main <= revision && gen.deleted.map_or(true, |del| del.main > revision)
         })
     }
 }
@@ -107,10 +106,7 @@ impl KeyIndex {
         let gen = entry.get_generation_at(revision)?;
 
         // Find the highest revision in this generation that's <= the requested revision
-        gen.revisions
-            .iter()
-            .rfind(|r| r.main <= revision)
-            .copied()
+        gen.revisions.iter().rfind(|r| r.main <= revision).copied()
     }
 
     /// Records a new modification (write) of a key.
@@ -141,8 +137,11 @@ impl KeyIndex {
                 .push(revision);
         }
 
-        debug!("Index: put key {:?} at revision {:?}",
-            String::from_utf8_lossy(key), revision);
+        debug!(
+            "Index: put key {:?} at revision {:?}",
+            String::from_utf8_lossy(key),
+            revision
+        );
     }
 
     /// Records a deletion of a key.
@@ -168,20 +167,18 @@ impl KeyIndex {
             });
         }
 
-        debug!("Index: tombstone key {:?} at revision {:?}",
-            String::from_utf8_lossy(key), revision);
+        debug!(
+            "Index: tombstone key {:?} at revision {:?}",
+            String::from_utf8_lossy(key),
+            revision
+        );
     }
 
     /// Returns all keys (and their revisions) in a range at a specific point in time.
     ///
     /// Returns key-revision pairs for all keys where start <= key < end,
     /// where the key was alive at the given revision.
-    pub fn range(
-        &self,
-        start: &[u8],
-        end: &[u8],
-        revision: i64,
-    ) -> Vec<(Vec<u8>, Revision)> {
+    pub fn range(&self, start: &[u8], end: &[u8], revision: i64) -> Vec<(Vec<u8>, Revision)> {
         let mut results = Vec::new();
 
         // Use range to iterate over keys in the specified range
@@ -194,11 +191,7 @@ impl KeyIndex {
 
         for (key, entry) in range_iter {
             if let Some(rev) = entry.get_generation_at(revision) {
-                if let Some(key_rev) = rev
-                    .revisions
-                    .iter()
-                    .rfind(|r| r.main <= revision)
-                {
+                if let Some(key_rev) = rev.revisions.iter().rfind(|r| r.main <= revision) {
                     results.push((key.clone(), *key_rev));
                 }
             }
