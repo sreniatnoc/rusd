@@ -24,6 +24,10 @@ pub mod etcdserverpb {
     tonic::include_proto!("etcdserverpb");
 }
 
+pub mod raftpb {
+    tonic::include_proto!("raftpb");
+}
+
 // Core modules
 pub mod storage;
 pub mod raft;

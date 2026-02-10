@@ -7,6 +7,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         proto_root.join("etcdserverpb/rpc.proto"),
         proto_root.join("etcdserverpb/kv.proto"),
         proto_root.join("etcdserverpb/auth.proto"),
+        proto_root.join("raftpb/raft_internal.proto"),
     ];
 
     tonic_build::configure()

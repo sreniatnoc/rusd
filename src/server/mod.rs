@@ -28,10 +28,12 @@ use crate::api::maintenance_service::MaintenanceService;
 use crate::api::auth_service::AuthService;
 use crate::auth::AuthStore;
 use crate::cluster::ClusterManager;
+use crate::api::raft_internal_service::RaftInternalService;
 use crate::etcdserverpb::{
     auth_server::AuthServer, cluster_server::ClusterServer, kv_server::KvServer,
     lease_server::LeaseServer, maintenance_server::MaintenanceServer, watch_server::WatchServer,
 };
+use crate::raftpb::raft_internal_server::RaftInternalServer;
 use crate::lease::LeaseManager;
 use crate::raft::config::{RaftConfig, PeerConfig};
 use crate::raft::log::RaftLog;
@@ -202,8 +204,16 @@ impl RusdServer {
             "Initializing rusd server"
         );
 
-        // Generate a unique member ID and cluster ID
-        let member_id = uuid::Uuid::new_v4().as_u64_pair().0;
+        // Generate a deterministic member ID from name + cluster token.
+        // This ensures the same node always gets the same ID across restarts.
+        let member_id = {
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+            let mut hasher = DefaultHasher::new();
+            config.name.hash(&mut hasher);
+            config.initial_cluster_token.hash(&mut hasher);
+            hasher.finish()
+        };
         let cluster_id = {
             use std::collections::hash_map::DefaultHasher;
             use std::hash::{Hash, Hasher};
@@ -331,6 +341,24 @@ impl RusdServer {
         // Start Raft node's event loop (now Send-safe with std::sync::Mutex)
         let raft_handle = self.raft.clone().run();
         self.background_tasks.push(raft_handle);
+
+        // Start peer RPC server on peer URLs (for Raft internal communication)
+        let peer_urls = parse_socket_addrs(&self.config.listen_peer_urls)?;
+        if !peer_urls.is_empty() {
+            let peer_addr = peer_urls[0];
+            let raft_internal_service = RaftInternalService::new(self.raft.clone());
+            let peer_server = Server::builder()
+                .add_service(RaftInternalServer::new(raft_internal_service))
+                .serve(peer_addr);
+
+            let peer_handle = tokio::spawn(async move {
+                info!("Peer RPC server listening on {}", peer_addr);
+                if let Err(e) = peer_server.await {
+                    error!("Peer RPC server error: {}", e);
+                }
+            });
+            self.background_tasks.push(peer_handle);
+        }
 
         // Parse client URLs and start gRPC server
         let client_urls = parse_socket_addrs(&self.config.listen_client_urls)?;
