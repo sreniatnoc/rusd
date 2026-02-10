@@ -63,5 +63,5 @@
 1. **Single-node only:** Benchmarks run with single-node etcd and rusd. etcd's Raft consensus overhead is minimal in single-node mode but would add latency in multi-node clusters.
 2. **Sequential access:** etcdctl benchmarks use sequential access patterns. Concurrent/parallel access patterns may show different characteristics.
 3. **K8s workload variation:** K8s benchmark timing includes kube-apiserver, kubelet, and controller-manager processing time, not just etcd/rusd latency.
-4. **rusd revision limitations:** rusd doesn't maintain full revision history (MVCC stores only latest version per key), which may cause non-fatal "Too large resource version" warnings in kube-apiserver logs.
+4. **rusd revision history:** As of the `feat/production-ready` branch, rusd maintains full MVCC revision history via dual-write to `kv` and `kv_rev` trees. The original benchmark was run before this fix, so "Too large resource version" warnings seen in earlier versions no longer apply.
 5. **etcd K8s numbers may be skewed:** The etcd Kind cluster was the second cluster created in the session, which may have Docker image cache advantages but also more host memory pressure.

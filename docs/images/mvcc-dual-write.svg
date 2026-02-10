@@ -1,0 +1,161 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 500" width="900" height="500">
+  <defs>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap');
+      text { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; }
+    </style>
+    <filter id="shadow" x="-4%" y="-4%" width="108%" height="108%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#000" flood-opacity="0.3"/>
+    </filter>
+    <linearGradient id="orangeGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#f97316;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#ea580c;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="greenGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#22c55e;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#16a34a;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="blueGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#6366f1;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#4f46e5;stop-opacity:1" />
+    </linearGradient>
+    <marker id="arrowOrange" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto" markerUnits="strokeWidth">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#f97316"/>
+    </marker>
+    <marker id="arrowGreen" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto" markerUnits="strokeWidth">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#22c55e"/>
+    </marker>
+    <marker id="arrowBlue" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto" markerUnits="strokeWidth">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#6366f1"/>
+    </marker>
+    <marker id="arrowSlate" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto" markerUnits="strokeWidth">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#94a3b8"/>
+    </marker>
+    <marker id="arrowWhite" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto" markerUnits="strokeWidth">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#e2e8f0"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="900" height="500" fill="#0f172a"/>
+
+  <!-- Title -->
+  <text x="450" y="32" text-anchor="middle" fill="#f8fafc" font-size="18" font-weight="700" letter-spacing="0.5">MVCC Dual-Write Flow</text>
+  <text x="450" y="50" text-anchor="middle" fill="#64748b" font-size="11" font-weight="400">How rusd persists every write to both kv and kv_rev trees</text>
+
+  <!-- ==================== STEP 1: Client PUT ==================== -->
+  <!-- Client box -->
+  <rect x="30" y="72" width="130" height="50" rx="8" fill="url(#orangeGrad)" filter="url(#shadow)"/>
+  <text x="95" y="94" text-anchor="middle" fill="#fff" font-size="12" font-weight="700">Client</text>
+  <text x="95" y="110" text-anchor="middle" fill="#ffedd5" font-size="10">PUT /key val</text>
+
+  <!-- Step number -->
+  <circle cx="50" y="72" r="10" fill="#f97316"/>
+  <text x="50" y="76" text-anchor="middle" fill="#fff" font-size="9" font-weight="700">1</text>
+
+  <!-- Arrow client -> MVCC -->
+  <line x1="160" y1="97" x2="214" y2="97" stroke="#f97316" stroke-width="2" marker-end="url(#arrowOrange)"/>
+  <text x="187" y="91" text-anchor="middle" fill="#f97316" font-size="8" font-weight="500">gRPC</text>
+
+  <!-- ==================== MVCC STORE CENTER ==================== -->
+  <rect x="220" y="68" width="450" height="58" rx="10" fill="#1e293b" stroke="#f97316" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="240" y="90" fill="#f97316" font-size="13" font-weight="700">MvccStore.put()</text>
+
+  <!-- Step 2: allocate revision -->
+  <circle cx="240" y="68" r="10" fill="#f97316"/>
+  <text x="240" y="72" text-anchor="middle" fill="#fff" font-size="9" font-weight="700">2</text>
+
+  <rect x="370" y="78" width="145" height="28" rx="5" fill="#0f172a" stroke="#475569" stroke-width="1"/>
+  <text x="442" y="96" text-anchor="middle" fill="#e2e8f0" font-size="10" font-weight="500">next_revision()</text>
+
+  <rect x="525" y="78" width="135" height="28" rx="5" fill="#0f172a" stroke="#f97316" stroke-width="1"/>
+  <text x="592" y="91" text-anchor="middle" fill="#f97316" font-size="10" font-weight="600">rev = N+1</text>
+  <text x="592" y="103" text-anchor="middle" fill="#64748b" font-size="8">AtomicI64::fetch_add</text>
+
+  <!-- ==================== DUAL WRITE SECTION ==================== -->
+  <!-- Vertical arrow from MVCC down to split -->
+  <line x1="445" y1="126" x2="445" y2="155" stroke="#e2e8f0" stroke-width="2" marker-end="url(#arrowWhite)"/>
+
+  <!-- Split point -->
+  <circle cx="445" cy="162" r="6" fill="#e2e8f0"/>
+  <text x="445" y="179" text-anchor="middle" fill="#94a3b8" font-size="9" font-weight="600">DUAL WRITE</text>
+
+  <!-- Left branch arrow to kv tree -->
+  <path d="M439,162 L235,210" stroke="#22c55e" stroke-width="2" fill="none" marker-end="url(#arrowGreen)"/>
+
+  <!-- Right branch arrow to kv_rev tree -->
+  <path d="M451,162 L655,210" stroke="#6366f1" stroke-width="2" fill="none" marker-end="url(#arrowBlue)"/>
+
+  <!-- ==================== KV TREE (LEFT) ==================== -->
+  <circle cx="110" y="196" r="10" fill="#22c55e"/>
+  <text x="110" y="200" text-anchor="middle" fill="#fff" font-size="9" font-weight="700">3</text>
+
+  <rect x="60" y="212" width="350" height="130" rx="10" fill="#1e293b" stroke="#22c55e" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="80" y="234" fill="#22c55e" font-size="13" font-weight="700">kv tree</text>
+  <text x="185" y="234" fill="#64748b" font-size="10">(latest value, key-indexed)</text>
+
+  <!-- Key format -->
+  <rect x="80" y="246" width="310" height="36" rx="6" fill="#0f172a" stroke="#475569" stroke-width="1"/>
+  <text x="95" y="262" fill="#94a3b8" font-size="9" font-weight="600">KEY FORMAT:</text>
+  <text x="95" y="276" fill="#22c55e" font-size="12" font-weight="600" font-style="italic">{key}</text>
+  <text x="155" y="276" fill="#64748b" font-size="10">  (e.g. "my/key")</text>
+
+  <!-- Value format -->
+  <rect x="80" y="290" width="310" height="42" rx="6" fill="#0f172a" stroke="#475569" stroke-width="1"/>
+  <text x="95" y="306" fill="#94a3b8" font-size="9" font-weight="600">VALUE:</text>
+  <text x="95" y="322" fill="#cbd5e1" font-size="9">create_rev | mod_rev | version | lease | value</text>
+
+  <!-- Overwrites label -->
+  <rect x="246" y="218" width="150" height="18" rx="4" fill="#22c55e" opacity="0.15"/>
+  <text x="321" y="231" text-anchor="middle" fill="#22c55e" font-size="9" font-weight="600">overwrites previous</text>
+
+  <!-- ==================== KV_REV TREE (RIGHT) ==================== -->
+  <circle cx="540" y="196" r="10" fill="#6366f1"/>
+  <text x="540" y="200" text-anchor="middle" fill="#fff" font-size="9" font-weight="700">4</text>
+
+  <rect x="490" y="212" width="380" height="130" rx="10" fill="#1e293b" stroke="#6366f1" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="510" y="234" fill="#6366f1" font-size="13" font-weight="700">kv_rev tree</text>
+  <text x="645" y="234" fill="#64748b" font-size="10">(historical, revision-indexed)</text>
+
+  <!-- Key format -->
+  <rect x="510" y="246" width="340" height="36" rx="6" fill="#0f172a" stroke="#475569" stroke-width="1"/>
+  <text x="525" y="262" fill="#94a3b8" font-size="9" font-weight="600">KEY FORMAT:</text>
+  <text x="525" y="276" fill="#6366f1" font-size="12" font-weight="600" font-style="italic">{rev_be}{key}</text>
+  <text x="640" y="276" fill="#64748b" font-size="10">  (8-byte big-endian + key)</text>
+
+  <!-- Value format -->
+  <rect x="510" y="290" width="340" height="42" rx="6" fill="#0f172a" stroke="#475569" stroke-width="1"/>
+  <text x="525" y="306" fill="#94a3b8" font-size="9" font-weight="600">VALUE:</text>
+  <text x="525" y="322" fill="#cbd5e1" font-size="9">create_rev | mod_rev | version | lease | key | value</text>
+
+  <!-- Appends label -->
+  <rect x="690" y="218" width="166" height="18" rx="4" fill="#6366f1" opacity="0.15"/>
+  <text x="773" y="231" text-anchor="middle" fill="#a5b4fc" font-size="9" font-weight="600">append-only (immutable)</text>
+
+  <!-- ==================== STEP 5: UPDATE KEYINDEX ==================== -->
+  <circle cx="54" y="360" r="10" fill="#f97316"/>
+  <text x="54" y="364" text-anchor="middle" fill="#fff" font-size="9" font-weight="700">5</text>
+
+  <line x1="235" y1="342" x2="235" y2="368" stroke="#f97316" stroke-width="1.5" marker-end="url(#arrowOrange)"/>
+
+  <rect x="60" y="370" width="350" height="56" rx="10" fill="#1e293b" stroke="#f97316" stroke-width="1.2" filter="url(#shadow)"/>
+  <text x="80" y="392" fill="#f97316" font-size="12" font-weight="700">Update In-Memory KeyIndex</text>
+  <text x="80" y="410" fill="#94a3b8" font-size="10">index.put(key, Revision::new(rev, 0))</text>
+  <text x="80" y="422" fill="#64748b" font-size="9">Maps key -> Vec of (main_rev, sub_rev) pairs</text>
+
+  <!-- ==================== STEP 6: WATCH HUB NOTIFICATION ==================== -->
+  <circle cx="490" y="360" r="10" fill="#22c55e"/>
+  <text x="490" y="364" text-anchor="middle" fill="#fff" font-size="9" font-weight="700">6</text>
+
+  <line x1="665" y1="342" x2="665" y2="368" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrowGreen)"/>
+
+  <rect x="490" y="370" width="380" height="56" rx="10" fill="#1e293b" stroke="#22c55e" stroke-width="1.2" filter="url(#shadow)"/>
+  <text x="510" y="392" fill="#22c55e" font-size="12" font-weight="700">Watch Hub Notified</text>
+  <text x="510" y="410" fill="#94a3b8" font-size="10">watch_hub.notify(events, revision, compact_rev)</text>
+  <text x="510" y="422" fill="#64748b" font-size="9">DashMap matches key ranges, sends via crossbeam channel</text>
+
+  <!-- ==================== BOTTOM: KEY INSIGHT ==================== -->
+  <rect x="60" y="444" width="810" height="42" rx="8" fill="#0f172a" stroke="#334155" stroke-width="1"/>
+  <text x="465" y="462" text-anchor="middle" fill="#94a3b8" font-size="10" font-weight="600">WHY DUAL-WRITE?</text>
+  <text x="465" y="478" text-anchor="middle" fill="#64748b" font-size="10">kv tree serves fast latest-value lookups (Range at current rev)  |  kv_rev tree enables historical reads, watch catchup, and point-in-time snapshots</text>
+</svg>
