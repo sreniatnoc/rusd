@@ -113,7 +113,7 @@ start_rusd() {
     local attempt=0
 
     while [ $attempt -lt $max_attempts ]; do
-        if curl -s "http://localhost:$RUSD_PORT/health" >/dev/null 2>&1; then
+        if etcdctl --endpoints="http://127.0.0.1:$RUSD_PORT" endpoint health >/dev/null 2>&1; then
             log_info "rusd is ready!"
             return 0
         fi
