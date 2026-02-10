@@ -18,7 +18,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tonic::transport::Server;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::api::kv_service::KvService;
 use crate::api::watch_service::WatchService;
@@ -351,10 +351,12 @@ impl RusdServer {
         let kv_service = KvService::new(self.store.clone(), self.raft.clone(), self.watch_hub.clone());
         let watch_service = WatchService::new(self.store.clone(), self.raft.clone(), self.watch_hub.clone());
 
-        // LeaseService needs the ApiLeaseManager bridge (raft + core lease manager)
+        // LeaseService needs the ApiLeaseManager bridge (raft + core lease manager + store + watch_hub)
         let api_lease_mgr = Arc::new(crate::api::lease_service::ApiLeaseManager::new(
             self.raft.clone(),
             self.lease_mgr.clone(),
+            self.store.clone(),
+            self.watch_hub.clone(),
         ));
         let lease_service = LeaseService::new(api_lease_mgr);
 
@@ -562,24 +564,43 @@ async fn process_lease_expiries(
     watch_hub: Arc<WatchHub>,
 ) {
     while let Some(event) = expire_rx.recv().await {
-        info!(lease_id = event.lease_id, "Processing lease expiry");
+        info!(lease_id = event.lease_id, key_count = event.keys.len(), "Processing lease expiry");
         for key in &event.keys {
-            match store.delete_range(key, &[]) {
-                Ok(_) => {
-                    // Notify watchers of deleted key
-                    let delete_event = crate::watch::Event {
-                        event_type: crate::watch::EventType::Delete,
-                        kv: crate::watch::KeyValue {
-                            key: key.clone(),
-                            create_revision: 0,
-                            mod_revision: store.current_revision(),
-                            version: 0,
-                            value: Vec::new(),
-                            lease: 0,
-                        },
-                        prev_kv: None,
-                    };
-                    let _ = watch_hub.notify(vec![delete_event], store.current_revision(), 0);
+            // Compute a single-key end range: key + 1 byte to delete exactly one key.
+            // Previously this used &[] which caused unbounded range delete.
+            let mut end_key = key.clone();
+            // Increment the last byte to form an exclusive upper bound for exactly this key
+            let key_found = if let Some(last) = end_key.last_mut() {
+                *last = last.wrapping_add(1);
+                true
+            } else {
+                false
+            };
+
+            if !key_found {
+                warn!(key = ?key, "Skipping empty key in lease expiry");
+                continue;
+            }
+
+            match store.delete_range(key, &end_key) {
+                Ok((rev, deleted_kvs)) => {
+                    for deleted_kv in &deleted_kvs {
+                        // Notify watchers of deleted key
+                        let delete_event = crate::watch::Event {
+                            event_type: crate::watch::EventType::Delete,
+                            kv: crate::watch::KeyValue {
+                                key: deleted_kv.key.clone(),
+                                create_revision: deleted_kv.create_revision,
+                                mod_revision: rev,
+                                version: deleted_kv.version,
+                                value: Vec::new(),
+                                lease: 0,
+                            },
+                            prev_kv: None,
+                        };
+                        let _ = watch_hub.notify(vec![delete_event], rev, 0);
+                    }
+                    debug!(key = ?String::from_utf8_lossy(key), revision = rev, "Deleted expired key");
                 }
                 Err(e) => {
                     error!(key = ?key, error = %e, "Failed to delete expired key");

@@ -2,28 +2,38 @@ use tonic::{Request, Response, Status, Code};
 use std::sync::Arc;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio::sync::mpsc;
+use tracing::{debug, error, info};
 
 use crate::etcdserverpb::*;
 use crate::etcdserverpb::lease_server::Lease as LeaseTrait;
 use crate::raft::node::RaftNode;
+use crate::storage::mvcc::MvccStore;
+use crate::watch::WatchHub;
 
 /// Bridge between the server layer and the lease API.
-/// Wraps both the Raft node (for consensus) and the core LeaseManager (for TTL logic).
+/// Wraps the Raft node, core LeaseManager, MvccStore, and WatchHub.
 pub struct ApiLeaseManager {
     pub raft: Arc<RaftNode>,
     pub core: Arc<crate::lease::LeaseManager>,
+    pub store: Arc<MvccStore>,
+    pub watch_hub: Arc<WatchHub>,
 }
 
 impl ApiLeaseManager {
-    pub fn new(raft: Arc<RaftNode>, core: Arc<crate::lease::LeaseManager>) -> Self {
-        Self { raft, core }
+    pub fn new(
+        raft: Arc<RaftNode>,
+        core: Arc<crate::lease::LeaseManager>,
+        store: Arc<MvccStore>,
+        watch_hub: Arc<WatchHub>,
+    ) -> Self {
+        Self { raft, core, store, watch_hub }
     }
 
     pub fn build_response_header(&self) -> ResponseHeader {
         ResponseHeader {
             cluster_id: 0, // Will be set by server
             member_id: 0,
-            revision: 0,
+            revision: self.store.current_revision(),
             raft_term: self.raft.current_term(),
         }
     }
@@ -117,9 +127,43 @@ impl LeaseTrait for LeaseService {
             .await
             .map_err(|e| Status::new(Code::Internal, format!("raft proposal failed: {}", e)))?;
 
-        // Revoke the lease in the core lease manager
-        self.api_lease_mgr.core.revoke(req.id)
+        // Revoke the lease in the core lease manager (returns attached keys)
+        let keys = self.api_lease_mgr.core.revoke(req.id)
             .map_err(|e| Status::new(Code::Internal, format!("lease revoke failed: {}", e)))?;
+
+        // Delete all attached keys from storage
+        for key in &keys {
+            let mut end_key = key.clone();
+            if let Some(last) = end_key.last_mut() {
+                *last = last.wrapping_add(1);
+            }
+
+            match self.api_lease_mgr.store.delete_range(key, &end_key) {
+                Ok((rev, deleted_kvs)) => {
+                    for deleted_kv in &deleted_kvs {
+                        let delete_event = crate::watch::Event {
+                            event_type: crate::watch::EventType::Delete,
+                            kv: crate::watch::KeyValue {
+                                key: deleted_kv.key.clone(),
+                                create_revision: deleted_kv.create_revision,
+                                mod_revision: rev,
+                                version: deleted_kv.version,
+                                value: Vec::new(),
+                                lease: 0,
+                            },
+                            prev_kv: None,
+                        };
+                        let _ = self.api_lease_mgr.watch_hub.notify(vec![delete_event], rev, 0);
+                    }
+                    debug!(key = ?String::from_utf8_lossy(key), "Deleted key on lease revoke");
+                }
+                Err(e) => {
+                    error!(key = ?key, error = %e, "Failed to delete key on lease revoke");
+                }
+            }
+        }
+
+        info!(lease_id = req.id, deleted_keys = keys.len(), "Lease revoked with key cleanup");
 
         let response = LeaseRevokeResponse {
             header: Some(self.api_lease_mgr.build_response_header()),
