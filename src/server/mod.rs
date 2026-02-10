@@ -328,13 +328,9 @@ impl RusdServer {
     ///
     /// This method will block until the shutdown signal is received or an error occurs.
     pub async fn run(mut self, shutdown: impl std::future::Future<Output = ()>) -> anyhow::Result<()> {
-        // TODO: Fix Send trait issue with parking_lot::Mutex for raft event loop
-        // Start Raft node's event loop
-        // let raft_clone = self.raft.clone();
-        // let raft_handle = tokio::spawn(async move {
-        //     raft_event_loop(raft_clone).await;
-        // });
-        // self.background_tasks.push(raft_handle);
+        // Start Raft node's event loop (now Send-safe with std::sync::Mutex)
+        let raft_handle = self.raft.clone().run();
+        self.background_tasks.push(raft_handle);
 
         // Parse client URLs and start gRPC server
         let client_urls = parse_socket_addrs(&self.config.listen_client_urls)?;
