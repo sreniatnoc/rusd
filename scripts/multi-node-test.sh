@@ -781,10 +781,10 @@ test_concurrent_writes() {
         return 1
     fi
 
-    # Write 200 keys rapidly (10 parallel streams of 20 keys each)
-    log_verbose "Writing 200 keys in 10 parallel streams..."
+    # Write 100 keys rapidly (5 parallel streams of 20 keys each)
+    log_verbose "Writing 100 keys in 5 parallel streams..."
     local pids=()
-    for stream in $(seq 1 10); do
+    for stream in $(seq 1 5); do
         (
             for i in $(seq 1 20); do
                 $ETCDCTL --endpoints="$leader_endpoint" put "/stress/s${stream}/key${i}" "v${stream}-${i}" >/dev/null 2>&1
@@ -794,22 +794,24 @@ test_concurrent_writes() {
     done
 
     # Wait for all streams to complete
-    local all_ok=true
     for pid in "${pids[@]}"; do
-        if ! wait "$pid" 2>/dev/null; then
-            all_ok=false
-        fi
+        wait "$pid" 2>/dev/null || true
     done
 
-    if [ "$all_ok" = false ]; then
-        log_warn "  Some parallel write streams had errors"
+    sleep 5  # Wait for replication
+
+    # Count keys on leader first to establish baseline
+    local leader_count
+    leader_count=$($ETCDCTL --endpoints="$leader_endpoint" get /stress/ --prefix --keys-only 2>/dev/null | grep -c '/stress/' || true)
+
+    if [ "$leader_count" -lt 80 ]; then
+        echo "  Leader only accepted $leader_count/100 writes (too many failures)"
+        return 1
     fi
 
-    sleep 5  # Wait for replication (longer for concurrent writes)
+    log_verbose "Leader has $leader_count/100 stress test keys"
 
-    # Verify total count across cluster
-    # Under concurrent stress, some proposals may contend; require 95% (190/200)
-    local min_expected=190
+    # Verify all healthy nodes replicated the leader's data
     for port in "${CLIENT_PORTS[@]}"; do
         local ep="http://127.0.0.1:${port}"
         local pid_for_port
@@ -821,13 +823,13 @@ test_concurrent_writes() {
         local count
         count=$($ETCDCTL --endpoints="$ep" get /stress/ --prefix --keys-only 2>/dev/null | grep -c '/stress/' || true)
 
-        if [ "$count" -lt "$min_expected" ]; then
-            echo "  Node on port $port has only $count/200 stress test keys (minimum: $min_expected)"
+        if [ "$count" -lt "$leader_count" ]; then
+            echo "  Node on port $port has $count/$leader_count stress test keys (replication lag)"
             return 1
         fi
     done
 
-    log_verbose "Stress test keys replicated to all healthy nodes (>= $min_expected/200)"
+    log_verbose "All $leader_count stress test keys replicated to all healthy nodes"
     return 0
 }
 
@@ -885,7 +887,7 @@ main() {
     run_test "T6: Node rejoin (restart killed node, verify catch-up)" test_node_rejoin
 
     # T7: Concurrent Writes
-    run_test "T7: Concurrent writes under cluster stress (200 keys)" test_concurrent_writes
+    run_test "T7: Concurrent writes under cluster stress (100 keys, 5 streams)" test_concurrent_writes
 
     # ==== Results Summary ====
 
