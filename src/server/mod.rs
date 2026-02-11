@@ -381,8 +381,9 @@ impl RusdServer {
         // Start background task to process Raft apply channel
         let store_clone = server.store.clone();
         let watch_hub_clone = server.watch_hub.clone();
+        let raft_clone = server.raft.clone();
         let apply_handle = tokio::spawn(async move {
-            process_apply_channel(apply_rx, store_clone, watch_hub_clone).await;
+            process_apply_channel(apply_rx, store_clone, watch_hub_clone, raft_clone).await;
         });
         server.background_tasks.push(apply_handle);
 
@@ -719,31 +720,107 @@ fn load_tls_config(
 }
 
 /// Background task that processes log entries from Raft's apply channel.
+/// On followers, this applies replicated mutations to the local store.
+/// On the leader, mutations are skipped (leader applies in the KV service after commit-wait).
 async fn process_apply_channel(
     mut apply_rx: mpsc::Receiver<crate::raft::LogEntry>,
-    _store: Arc<MvccStore>,
-    _watch_hub: Arc<WatchHub>,
+    store: Arc<MvccStore>,
+    watch_hub: Arc<WatchHub>,
+    raft: Arc<RaftNode>,
 ) {
     while let Some(entry) = apply_rx.recv().await {
         match entry.entry_type {
             crate::raft::EntryType::Normal => {
-                // Deserialize and apply the data mutation
-                match serde_json::from_slice::<serde_json::Value>(&entry.data) {
-                    Ok(_value) => {
-                        // Application would deserialize into specific operation types
-                        // and call store.put/delete_range, then dispatch to watch_hub
+                // Leader applies in KV service write path; skip here to avoid double-apply
+                if raft.is_leader() {
+                    continue;
+                }
+
+                let data = String::from_utf8_lossy(&entry.data);
+
+                if let Some(rest) = data.strip_prefix("PUT:") {
+                    // Format: PUT:key:value
+                    if let Some((key, value)) = rest.split_once(':') {
+                        match store.put(key.as_bytes(), value.as_bytes(), 0) {
+                            Ok((rev, kv, old_kv)) => {
+                                let watch_prev = old_kv.as_ref().map(|k| crate::watch::KeyValue {
+                                    key: k.key.clone(),
+                                    create_revision: k.create_revision,
+                                    mod_revision: k.mod_revision,
+                                    version: k.version,
+                                    value: k.value.clone(),
+                                    lease: k.lease,
+                                });
+                                let put_event = crate::watch::Event {
+                                    event_type: crate::watch::EventType::Put,
+                                    kv: crate::watch::KeyValue {
+                                        key: kv.key.clone(),
+                                        create_revision: kv.create_revision,
+                                        mod_revision: kv.mod_revision,
+                                        version: kv.version,
+                                        value: kv.value.clone(),
+                                        lease: kv.lease,
+                                    },
+                                    prev_kv: watch_prev,
+                                };
+                                let _ = watch_hub.notify(vec![put_event], rev, 0);
+                                debug!(key = key, revision = rev, "Follower applied PUT");
+                            }
+                            Err(e) => {
+                                error!(key = key, error = %e, "Follower failed to apply PUT");
+                            }
+                        }
                     }
-                    Err(e) => {
-                        error!(error = %e, "Failed to deserialize log entry");
+                } else if let Some(rest) = data.strip_prefix("DELETE:") {
+                    // Format: DELETE:key:range_end
+                    if let Some((key, range_end)) = rest.split_once(':') {
+                        let effective_range_end = if range_end.is_empty() {
+                            let mut end = key.as_bytes().to_vec();
+                            end.push(0);
+                            end
+                        } else {
+                            range_end.as_bytes().to_vec()
+                        };
+                        match store.delete_range(key.as_bytes(), &effective_range_end) {
+                            Ok((rev, deleted_kvs)) => {
+                                if !deleted_kvs.is_empty() {
+                                    let delete_events: Vec<crate::watch::Event> = deleted_kvs
+                                        .iter()
+                                        .map(|kv| crate::watch::Event {
+                                            event_type: crate::watch::EventType::Delete,
+                                            kv: crate::watch::KeyValue {
+                                                key: kv.key.clone(),
+                                                create_revision: kv.create_revision,
+                                                mod_revision: rev,
+                                                version: kv.version,
+                                                value: Vec::new(),
+                                                lease: 0,
+                                            },
+                                            prev_kv: Some(crate::watch::KeyValue {
+                                                key: kv.key.clone(),
+                                                create_revision: kv.create_revision,
+                                                mod_revision: kv.mod_revision,
+                                                version: kv.version,
+                                                value: kv.value.clone(),
+                                                lease: kv.lease,
+                                            }),
+                                        })
+                                        .collect();
+                                    let _ = watch_hub.notify(delete_events, rev, 0);
+                                }
+                                debug!(key = key, revision = rev, "Follower applied DELETE");
+                            }
+                            Err(e) => {
+                                error!(key = key, error = %e, "Follower failed to apply DELETE");
+                            }
+                        }
                     }
                 }
             }
             crate::raft::EntryType::ConfigChange => {
-                // Handle configuration changes (membership changes)
                 info!("Processing config change entry at index {}", entry.index);
             }
             crate::raft::EntryType::Snapshot => {
-                // Handle snapshot entries
                 info!("Processing snapshot entry at index {}", entry.index);
             }
         }

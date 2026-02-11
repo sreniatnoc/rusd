@@ -6,7 +6,7 @@ pub mod transport;
 
 pub use config::{PeerConfig, RaftConfig};
 pub use log::{EntryType, LogEntry, RaftLog};
-pub use node::RaftNode;
+pub use node::{CommitNotifier, RaftNode};
 pub use state::{RaftRole, RaftState};
 pub use transport::{
     AppendEntriesRequest, AppendEntriesResponse, GrpcTransport, InstallSnapshotRequest,

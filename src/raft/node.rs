@@ -6,12 +6,60 @@ use crate::raft::transport::{
     RaftTransport, RequestVoteRequest, RequestVoteResponse,
 };
 use crate::raft::{EntryType, LogEntry, RaftError, RaftMessage, Result as RaftResult};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::Mutex; // std::sync::Mutex guards are Send (unlike parking_lot)
 use std::time::Duration;
+use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use tracing::{debug, info, warn};
+
+/// Notifies waiters when the Raft commit index advances past their requested index.
+/// Used by the KV service to wait for proposals to be committed before applying.
+pub struct CommitNotifier {
+    waiters: Mutex<BTreeMap<u64, Vec<oneshot::Sender<()>>>>,
+}
+
+impl Default for CommitNotifier {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CommitNotifier {
+    pub fn new() -> Self {
+        Self {
+            waiters: Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    /// Register a waiter for the given log index. Returns a receiver that
+    /// completes when commit_index >= index.
+    pub fn register(&self, index: u64) -> oneshot::Receiver<()> {
+        let (tx, rx) = oneshot::channel();
+        self.waiters
+            .lock()
+            .unwrap()
+            .entry(index)
+            .or_default()
+            .push(tx);
+        rx
+    }
+
+    /// Notify all waiters with index <= committed_index.
+    pub fn notify_up_to(&self, committed_index: u64) {
+        let mut waiters = self.waiters.lock().unwrap();
+        let keys: Vec<u64> = waiters.range(..=committed_index).map(|(&k, _)| k).collect();
+        for key in keys {
+            if let Some(senders) = waiters.remove(&key) {
+                for sender in senders {
+                    let _ = sender.send(());
+                }
+            }
+        }
+    }
+}
 
 pub struct RaftNode {
     config: Arc<RaftConfig>,
@@ -19,6 +67,7 @@ pub struct RaftNode {
     log: Arc<RaftLog>,
     transport: Arc<dyn RaftTransport>,
     apply_tx: tokio::sync::mpsc::Sender<LogEntry>,
+    commit_notifier: Arc<CommitNotifier>,
 
     // Timers - use std::sync::Mutex (Send-safe guards, unlike parking_lot)
     election_timer: Mutex<Option<Instant>>,
@@ -44,10 +93,11 @@ impl RaftNode {
 
         let config = Arc::new(config);
         let state = Arc::new(RaftState::new());
+        let commit_notifier = Arc::new(CommitNotifier::new());
 
         // Single-node cluster: auto-elect as leader immediately
         if config.peers.is_empty() {
-            state.become_leader(config.id, &[]);
+            state.become_leader(config.id, &[], log.last_index());
         }
 
         Ok(Self {
@@ -60,6 +110,7 @@ impl RaftNode {
             log,
             transport,
             apply_tx,
+            commit_notifier,
             message_tx: Arc::new(message_tx),
             message_rx: Arc::new(Mutex::new(message_rx)),
         })
@@ -364,6 +415,7 @@ impl RaftNode {
         self.state.become_leader(
             self.config.id,
             &self.config.peers.iter().map(|p| p.id).collect::<Vec<_>>(),
+            self.log.last_index(),
         );
 
         // Reset heartbeat timer (guard drops before .await)
@@ -392,9 +444,12 @@ impl RaftNode {
             .collect();
 
         let leader_commit = self.state.commit_index();
+        // Capture all peer IDs and leader's log index for majority calculation
+        let all_peer_ids: Vec<u64> = peers.clone();
+        let leader_last_index = self.log.last_index();
 
         for peer_id in peers {
-            let next_idx = self.state.next_index(peer_id).unwrap_or(0);
+            let next_idx = self.state.next_index(peer_id).unwrap_or(1);
 
             // Determine previous log index and term
             let prev_log_index = if next_idx > 0 { next_idx - 1 } else { 0 };
@@ -421,7 +476,8 @@ impl RaftNode {
 
             let transport_clone = self.transport.clone();
             let state_clone = self.state.clone();
-            let _log_clone = self.log.clone();
+            let all_peer_ids_clone = all_peer_ids.clone();
+            let commit_notifier_clone = self.commit_notifier.clone();
 
             tokio::spawn(async move {
                 match transport_clone.send_append_entries(peer_id, request).await {
@@ -437,12 +493,12 @@ impl RaftNode {
                             let _ = state_clone.decrement_next_index(peer_id);
                         }
 
-                        // Advance commit_index if we have consensus
-                        let majority_match_idx = state_clone.get_majority_match_index(
-                            &vec![peer_id].iter().copied().collect::<Vec<_>>(),
-                        );
+                        // Advance commit_index using ALL peers + leader's own index
+                        let majority_match_idx = state_clone
+                            .get_majority_match_index(&all_peer_ids_clone, leader_last_index);
                         if majority_match_idx > state_clone.commit_index() {
                             state_clone.set_commit_index(majority_match_idx);
+                            commit_notifier_clone.notify_up_to(majority_match_idx);
                         }
                     }
                     Err(_e) => {
@@ -618,7 +674,7 @@ impl RaftNode {
         InstallSnapshotResponse { term: current_term }
     }
 
-    pub async fn propose(&self, data: Vec<u8>) -> RaftResult<()> {
+    pub async fn propose(&self, data: Vec<u8>) -> RaftResult<u64> {
         if !self.state.is_leader() {
             return Err(RaftError::NotLeader);
         }
@@ -632,14 +688,23 @@ impl RaftNode {
         };
 
         self.log.append(&[entry])?;
+
+        // Single-node: immediately commit since there are no peers to replicate to
+        if self.config.peers.is_empty() {
+            self.state.set_commit_index(index);
+        }
+
         self.send_heartbeats().await?;
 
-        Ok(())
+        Ok(index)
     }
 
     async fn apply_committed_entries(&self) -> RaftResult<()> {
         let commit_index = self.state.commit_index();
         let last_applied = self.state.last_applied();
+
+        // Always notify commit waiters (handles races between register and commit)
+        self.commit_notifier.notify_up_to(commit_index);
 
         for index in (last_applied + 1)..=commit_index {
             if let Some(entry) = self.log.get(index)? {
@@ -713,6 +778,10 @@ impl RaftNode {
 
     pub fn get_config(&self) -> Arc<RaftConfig> {
         self.config.clone()
+    }
+
+    pub fn commit_notifier(&self) -> &CommitNotifier {
+        &self.commit_notifier
     }
 
     pub fn is_leader(&self) -> bool {
