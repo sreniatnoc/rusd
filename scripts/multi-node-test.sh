@@ -476,15 +476,24 @@ test_log_replication() {
     # Wait for replication
     sleep 3
 
+    # Quick sanity check: verify a known key exists on leader before counting
+    local sanity_val
+    sanity_val=$($ETCDCTL --endpoints="$leader_endpoint" get /repl/key050 --print-value-only 2>/dev/null || echo "")
+    if [ "$sanity_val" != "value50" ]; then
+        echo "  Sanity check failed: /repl/key050 on leader returned '$sanity_val' (expected 'value50')"
+        return 1
+    fi
+    log_verbose "Sanity check passed: /repl/key050 exists on leader"
+
     # Read from each node and verify count
     local all_ok=true
     for port in "${CLIENT_PORTS[@]}"; do
         local endpoint="http://127.0.0.1:${port}"
         local count
-        count=$($ETCDCTL --endpoints="$endpoint" get /repl/ --prefix --count-only --write-out=json 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('count',0))" 2>/dev/null || echo "0")
+        count=$($ETCDCTL --endpoints="$endpoint" get /repl/ --prefix --keys-only 2>/dev/null | grep -c '/repl/' || true)
 
         if [ "$count" -ne 100 ]; then
-            echo "  Node on port $port has $count/100 keys"
+            echo "  Node on port $port has $count/100 keys (endpoint: $endpoint)"
             all_ok=false
         else
             log_verbose "Node on port $port has all 100 keys"
@@ -691,7 +700,7 @@ test_data_integrity_after_failover() {
     endpoint=$(echo "$surviving_endpoints" | cut -d',' -f1)
 
     local count
-    count=$($ETCDCTL --endpoints="$endpoint" get /repl/ --prefix --count-only --write-out=json 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('count',0))" 2>/dev/null || echo "0")
+    count=$($ETCDCTL --endpoints="$endpoint" get /repl/ --prefix --keys-only 2>/dev/null | grep -c '/repl/' || true)
 
     if [ "$count" -lt 100 ]; then
         echo "  Data loss: expected 100 keys under /repl/, found $count"
@@ -747,7 +756,7 @@ test_node_rejoin() {
     sleep 5
 
     local count
-    count=$($ETCDCTL --endpoints="$endpoint" get /repl/ --prefix --count-only --write-out=json 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('count',0))" 2>/dev/null || echo "0")
+    count=$($ETCDCTL --endpoints="$endpoint" get /repl/ --prefix --keys-only 2>/dev/null | grep -c '/repl/' || true)
 
     if [ "$count" -lt 100 ]; then
         echo "  Restarted node only has $count/100 replicated keys"
@@ -808,7 +817,7 @@ test_concurrent_writes() {
         fi
 
         local count
-        count=$($ETCDCTL --endpoints="$ep" get /stress/ --prefix --count-only --write-out=json 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('count',0))" 2>/dev/null || echo "0")
+        count=$($ETCDCTL --endpoints="$ep" get /stress/ --prefix --keys-only 2>/dev/null | grep -c '/stress/' || true)
 
         if [ "$count" -lt 200 ]; then
             echo "  Node on port $port has only $count/200 stress test keys"
