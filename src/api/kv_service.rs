@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 use tonic::{Code, Request, Response, Status};
 
 use crate::etcdserverpb::kv_server::Kv;
@@ -247,18 +248,28 @@ impl Kv for KvService {
         }
 
         // Propose to Raft
-        // TODO: Use proper proto encoding for proposals instead of bincode
         let proposal_data = format!(
             "PUT:{}:{}",
             String::from_utf8_lossy(&req.key),
             String::from_utf8_lossy(&req.value)
         );
 
-        let _result = self
+        let log_index = self
             .raft
             .propose(proposal_data.into_bytes())
             .await
             .map_err(|e| Status::new(Code::Internal, format!("raft proposal failed: {}", e)))?;
+
+        // Wait for the entry to be committed (replicated to majority)
+        if self.raft.get_state().commit_index() < log_index {
+            let rx = self.raft.commit_notifier().register(log_index);
+            tokio::time::timeout(Duration::from_secs(5), rx)
+                .await
+                .map_err(|_| {
+                    Status::new(Code::DeadlineExceeded, "timed out waiting for raft commit")
+                })?
+                .map_err(|_| Status::new(Code::Internal, "commit notification channel closed"))?;
+        }
 
         // Apply the put operation to the store
         let (new_revision, kv, old_kv) = self
@@ -336,17 +347,28 @@ impl Kv for KvService {
         };
 
         // Propose to Raft
-        // TODO: Use proper proto encoding for proposals
         let proposal_data = format!(
             "DELETE:{}:{}",
             String::from_utf8_lossy(&req.key),
             String::from_utf8_lossy(&req.range_end)
         );
 
-        self.raft
+        let log_index = self
+            .raft
             .propose(proposal_data.into_bytes())
             .await
             .map_err(|e| Status::new(Code::Internal, format!("raft proposal failed: {}", e)))?;
+
+        // Wait for the entry to be committed (replicated to majority)
+        if self.raft.get_state().commit_index() < log_index {
+            let rx = self.raft.commit_notifier().register(log_index);
+            tokio::time::timeout(Duration::from_secs(5), rx)
+                .await
+                .map_err(|_| {
+                    Status::new(Code::DeadlineExceeded, "timed out waiting for raft commit")
+                })?
+                .map_err(|_| Status::new(Code::Internal, "commit notification channel closed"))?;
+        }
 
         // Apply the delete operation
         let effective_range_end = if req.range_end.is_empty() {

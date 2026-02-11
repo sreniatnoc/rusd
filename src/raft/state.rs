@@ -76,17 +76,18 @@ impl RaftState {
         *self.leader_id.write() = None;
     }
 
-    pub fn become_leader(&self, self_id: u64, peer_ids: &[u64]) {
+    pub fn become_leader(&self, self_id: u64, peer_ids: &[u64], last_log_index: u64) {
         // Note: caller (start_real_election) already incremented the term
         *self.role.write() = RaftRole::Leader;
         *self.voted_for.write() = None;
         *self.leader_id.write() = Some(self_id); // Leader must know its own ID for StatusResponse
 
         // Initialize next_index and match_index for all peers
+        // Per Raft paper: nextIndex[] initialized to leader last log index + 1
         let mut next_idx = HashMap::new();
         let mut match_idx = HashMap::new();
         for &peer_id in peer_ids {
-            next_idx.insert(peer_id, 0);
+            next_idx.insert(peer_id, last_log_index + 1);
             match_idx.insert(peer_id, 0);
         }
         *self.next_index.write() = next_idx;
@@ -197,20 +198,22 @@ impl RaftState {
         self.learners.read().clone()
     }
 
-    pub fn get_majority_match_index(&self, all_peer_ids: &[u64]) -> u64 {
+    pub fn get_majority_match_index(&self, all_peer_ids: &[u64], leader_last_index: u64) -> u64 {
+        // Collect match_index for all peers (0 if not yet known)
         let mut indices: Vec<u64> = all_peer_ids
             .iter()
-            .filter_map(|&id| self.match_index(id))
+            .map(|&id| self.match_index(id).unwrap_or(0))
             .collect();
+        // Leader implicitly matches its own log
+        indices.push(leader_last_index);
         indices.sort_by(|a, b| b.cmp(a)); // Sort descending
 
-        if indices.is_empty() {
-            return 0;
-        }
+        // Total cluster = peers + leader; majority = floor(total/2) + 1
+        let total_nodes = all_peer_ids.len() + 1;
+        let majority = total_nodes / 2 + 1;
 
-        let majority_idx = (indices.len() + 1) / 2;
-        if majority_idx <= indices.len() {
-            indices[majority_idx - 1]
+        if majority <= indices.len() {
+            indices[majority - 1]
         } else {
             0
         }

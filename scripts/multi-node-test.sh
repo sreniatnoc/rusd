@@ -20,17 +20,12 @@
 #   1 - One or more tests failed
 #   2 - Prerequisites not met
 #
-# Note on current status:
-#   Multi-node Raft is NOT yet implemented in rusd. This script is designed
-#   to validate the implementation once the following are complete:
+# Multi-node Raft is fully implemented:
 #   - Raft gRPC transport (peer-to-peer communication)
-#   - Vote collection in leader election
-#   - Raft event loop (parking_lot Send fix)
-#   - Stable node identity
-#
-#   Running this script against the current codebase will start 3 independent
-#   single-node instances that do not communicate with each other. The tests
-#   will fail at the "verify same leader" step.
+#   - Leader election with majority vote
+#   - Log replication with commit-wait
+#   - Follower state machine apply via apply channel
+#   - Deterministic member IDs from name + cluster token
 # ==============================================================================
 
 set -euo pipefail
@@ -282,6 +277,39 @@ wait_for_cluster() {
     fi
 }
 
+# Wait for a leader to be elected (multi-node clusters need election timeout)
+wait_for_leader() {
+    local max_wait=${1:-15}
+    local endpoints
+    endpoints=$(all_endpoints)
+
+    log_info "Waiting up to ${max_wait}s for leader election..."
+
+    for i in $(seq 1 "$max_wait"); do
+        local status_output
+        status_output=$($ETCDCTL --endpoints="$endpoints" endpoint status --write-out=json 2>/dev/null || true)
+
+        if [ -n "$status_output" ]; then
+            local leader_count
+            leader_count=$(echo "$status_output" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+leaders = [e for e in data if e.get('Status', {}).get('leader', 0) == e.get('Status', {}).get('header', {}).get('member_id', -1)]
+print(len(leaders))
+" 2>/dev/null || echo "0")
+
+            if [ "$leader_count" = "1" ]; then
+                log_info "Leader elected after ${i}s"
+                return 0
+            fi
+        fi
+        sleep 1
+    done
+
+    log_warn "No leader elected within ${max_wait}s"
+    return 1
+}
+
 # Build the endpoints string for etcdctl
 all_endpoints() {
     local endpoints=""
@@ -453,7 +481,7 @@ test_log_replication() {
     for port in "${CLIENT_PORTS[@]}"; do
         local endpoint="http://127.0.0.1:${port}"
         local count
-        count=$($ETCDCTL --endpoints="$endpoint" get /repl/ --prefix --count-only 2>/dev/null | grep -o '[0-9]*' | head -1 || echo "0")
+        count=$($ETCDCTL --endpoints="$endpoint" get /repl/ --prefix --count-only --write-out=json 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('count',0))" 2>/dev/null || echo "0")
 
         if [ "$count" -ne 100 ]; then
             echo "  Node on port $port has $count/100 keys"
@@ -663,7 +691,7 @@ test_data_integrity_after_failover() {
     endpoint=$(echo "$surviving_endpoints" | cut -d',' -f1)
 
     local count
-    count=$($ETCDCTL --endpoints="$endpoint" get /repl/ --prefix --count-only 2>/dev/null | grep -o '[0-9]*' | head -1 || echo "0")
+    count=$($ETCDCTL --endpoints="$endpoint" get /repl/ --prefix --count-only --write-out=json 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('count',0))" 2>/dev/null || echo "0")
 
     if [ "$count" -lt 100 ]; then
         echo "  Data loss: expected 100 keys under /repl/, found $count"
@@ -719,7 +747,7 @@ test_node_rejoin() {
     sleep 5
 
     local count
-    count=$($ETCDCTL --endpoints="$endpoint" get /repl/ --prefix --count-only 2>/dev/null | grep -o '[0-9]*' | head -1 || echo "0")
+    count=$($ETCDCTL --endpoints="$endpoint" get /repl/ --prefix --count-only --write-out=json 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('count',0))" 2>/dev/null || echo "0")
 
     if [ "$count" -lt 100 ]; then
         echo "  Restarted node only has $count/100 replicated keys"
@@ -780,7 +808,7 @@ test_concurrent_writes() {
         fi
 
         local count
-        count=$($ETCDCTL --endpoints="$ep" get /stress/ --prefix --count-only 2>/dev/null | grep -o '[0-9]*' | head -1 || echo "0")
+        count=$($ETCDCTL --endpoints="$ep" get /stress/ --prefix --count-only --write-out=json 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('count',0))" 2>/dev/null || echo "0")
 
         if [ "$count" -lt 200 ]; then
             echo "  Node on port $port has only $count/200 stress test keys"
@@ -814,6 +842,13 @@ main() {
     if ! wait_for_cluster 30; then
         echo ""
         log_warn "Cluster did not fully form. Some tests may fail."
+        echo "Node logs are in $TEST_DIR/*.log"
+        echo ""
+    fi
+
+    if ! wait_for_leader 15; then
+        echo ""
+        log_warn "No leader elected. Multi-node tests will likely fail."
         echo "Node logs are in $TEST_DIR/*.log"
         echo ""
     fi
