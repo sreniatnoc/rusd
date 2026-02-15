@@ -1,7 +1,10 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::RwLock;
 use tonic::{Code, Request, Response, Status};
 
+use crate::etcdserverpb::kv_client::KvClient;
 use crate::etcdserverpb::kv_server::Kv;
 use crate::etcdserverpb::response_op;
 use crate::etcdserverpb::*;
@@ -13,6 +16,10 @@ pub struct KvService {
     store: Arc<MvccStore>,
     raft: Arc<RaftNode>,
     watch_hub: Arc<WatchHub>,
+    /// Map of member_id → client_url for leader forwarding in multi-node clusters
+    peer_client_urls: HashMap<u64, String>,
+    /// Cached gRPC clients for leader forwarding
+    leader_clients: Arc<RwLock<HashMap<u64, KvClient<tonic::transport::Channel>>>>,
 }
 
 impl KvService {
@@ -21,7 +28,69 @@ impl KvService {
             store,
             raft,
             watch_hub,
+            peer_client_urls: HashMap::new(),
+            leader_clients: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    /// Create a KvService with peer client URLs for leader forwarding.
+    pub fn with_peer_urls(
+        store: Arc<MvccStore>,
+        raft: Arc<RaftNode>,
+        watch_hub: Arc<WatchHub>,
+        peer_client_urls: HashMap<u64, String>,
+    ) -> Self {
+        Self {
+            store,
+            raft,
+            watch_hub,
+            peer_client_urls,
+            leader_clients: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    /// Get or create a gRPC client for forwarding to the leader.
+    async fn get_leader_client(&self) -> Result<KvClient<tonic::transport::Channel>, Status> {
+        let leader_id = self.raft.get_state().leader_id().ok_or_else(|| {
+            Status::new(Code::Unavailable, "no leader elected")
+        })?;
+
+        // Check cache
+        {
+            let clients = self.leader_clients.read().await;
+            if let Some(client) = clients.get(&leader_id) {
+                return Ok(client.clone());
+            }
+        }
+
+        // Get leader's client URL
+        let leader_url = self.peer_client_urls.get(&leader_id).ok_or_else(|| {
+            Status::new(
+                Code::Unavailable,
+                format!("leader {} client URL unknown", leader_id),
+            )
+        })?;
+
+        // Create new connection
+        let endpoint = tonic::transport::Endpoint::from_shared(leader_url.clone())
+            .map_err(|e| Status::new(Code::Internal, format!("invalid leader URL: {}", e)))?
+            .timeout(Duration::from_secs(5))
+            .connect_timeout(Duration::from_secs(3));
+
+        let channel = endpoint
+            .connect()
+            .await
+            .map_err(|e| Status::new(Code::Unavailable, format!("cannot connect to leader: {}", e)))?;
+
+        let client = KvClient::new(channel);
+
+        // Cache it
+        self.leader_clients
+            .write()
+            .await
+            .insert(leader_id, client.clone());
+
+        Ok(client)
     }
 
     fn build_response_header(&self) -> ResponseHeader {
@@ -231,6 +300,13 @@ impl Kv for KvService {
             kvs.retain(|kv| kv.mod_revision <= req.max_mod_revision);
         }
 
+        // Handle keys_only: strip values from response KVs
+        if req.keys_only {
+            for kv in &mut kvs {
+                kv.value = vec![];
+            }
+        }
+
         let response = RangeResponse {
             header: Some(self.build_response_header()),
             kvs,
@@ -249,16 +325,66 @@ impl Kv for KvService {
             return Err(Status::new(Code::InvalidArgument, "key must not be empty"));
         }
 
-        // Check if leader
+        // If not leader, forward to the leader
         if !self.raft.is_leader() {
-            return Err(Status::new(Code::FailedPrecondition, "not a leader"));
+            if !self.peer_client_urls.is_empty() {
+                let mut client = self.get_leader_client().await?;
+                return client.put(Request::new(req)).await;
+            }
+            return Err(Status::new(Code::Unavailable, "not a leader"));
         }
+
+        // Handle ignore_value: preserve existing value when flag is set
+        let effective_value = if req.ignore_value {
+            let mut end = req.key.clone();
+            end.push(0);
+            match self.store.range(
+                &req.key,
+                &end,
+                self.store.current_revision(),
+                1,
+                false,
+            ) {
+                Ok(result) => result
+                    .kvs
+                    .into_iter()
+                    .next()
+                    .map(|kv| kv.value)
+                    .unwrap_or_default(),
+                Err(_) => vec![],
+            }
+        } else {
+            req.value.clone()
+        };
+
+        // Handle ignore_lease: preserve existing lease when flag is set
+        let effective_lease = if req.ignore_lease {
+            let mut end = req.key.clone();
+            end.push(0);
+            match self.store.range(
+                &req.key,
+                &end,
+                self.store.current_revision(),
+                1,
+                false,
+            ) {
+                Ok(result) => result
+                    .kvs
+                    .into_iter()
+                    .next()
+                    .map(|kv| kv.lease)
+                    .unwrap_or(0),
+                Err(_) => 0,
+            }
+        } else {
+            req.lease
+        };
 
         // Propose to Raft
         let proposal_data = format!(
             "PUT:{}:{}",
             String::from_utf8_lossy(&req.key),
-            String::from_utf8_lossy(&req.value)
+            String::from_utf8_lossy(&effective_value)
         );
 
         let log_index = self
@@ -281,7 +407,7 @@ impl Kv for KvService {
         // Apply the put operation to the store
         let (new_revision, kv, old_kv) = self
             .store
-            .put(&req.key, &req.value, req.lease)
+            .put(&req.key, &effective_value, effective_lease)
             .map_err(|e| Status::new(Code::Internal, format!("put failed: {}", e)))?;
 
         // Notify watchers of the put event (include prev_kv for K8s compatibility)
@@ -319,9 +445,13 @@ impl Kv for KvService {
             return Err(Status::new(Code::InvalidArgument, "key must not be empty"));
         }
 
-        // Check if leader
+        // If not leader, forward to the leader
         if !self.raft.is_leader() {
-            return Err(Status::new(Code::FailedPrecondition, "not a leader"));
+            if !self.peer_client_urls.is_empty() {
+                let mut client = self.get_leader_client().await?;
+                return client.delete_range(Request::new(req)).await;
+            }
+            return Err(Status::new(Code::Unavailable, "not a leader"));
         }
 
         // Compute effective range_end (same etcd conventions as range)
@@ -410,9 +540,13 @@ impl Kv for KvService {
     async fn txn(&self, request: Request<TxnRequest>) -> Result<Response<TxnResponse>, Status> {
         let req = request.into_inner();
 
-        // Check if leader
+        // If not leader, forward to the leader
         if !self.raft.is_leader() {
-            return Err(Status::new(Code::FailedPrecondition, "not a leader"));
+            if !self.peer_client_urls.is_empty() {
+                let mut client = self.get_leader_client().await?;
+                return client.txn(Request::new(req)).await;
+            }
+            return Err(Status::new(Code::Unavailable, "not a leader"));
         }
 
         let current_revision = self.store.current_revision();
@@ -602,9 +736,13 @@ impl Kv for KvService {
             ));
         }
 
-        // Check if leader
+        // If not leader, forward to the leader
         if !self.raft.is_leader() {
-            return Err(Status::new(Code::FailedPrecondition, "not a leader"));
+            if !self.peer_client_urls.is_empty() {
+                let mut client = self.get_leader_client().await?;
+                return client.compact(Request::new(req)).await;
+            }
+            return Err(Status::new(Code::Unavailable, "not a leader"));
         }
 
         // Perform compaction

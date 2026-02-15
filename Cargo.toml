@@ -32,6 +32,7 @@ thiserror = "1.0"
 anyhow = "1.0"
 async-trait = "0.1"
 bincode = "1"
+rcgen = "0.12"
 
 [build-dependencies]
 tonic-build = "0.11"

@@ -170,21 +170,22 @@ struct Args {
 
     // ---- etcd-compat flags (accepted but ignored for e2e test compatibility) ----
 
-    /// Enable auto TLS for client connections (etcd compat, ignored).
-    #[arg(long, default_value_t = false, hide = true)]
+    /// Enable auto TLS for client connections (generates self-signed cert).
+    #[arg(long, default_value_t = false)]
     auto_tls: bool,
 
-    /// Enable auto TLS for peer connections (etcd compat, ignored).
-    #[arg(long, default_value_t = false, hide = true)]
+    /// Enable auto TLS for peer connections (generates self-signed cert).
+    #[arg(long, default_value_t = false)]
     peer_auto_tls: bool,
 
     /// Enable client certificate authentication (etcd compat, ignored — rusd infers from trusted-ca-file).
-    #[arg(long, default_value_t = false, hide = true)]
-    client_cert_auth: bool,
+    /// Can be specified multiple times (etcd CLI sends it twice in some configs).
+    #[arg(long, hide = true, action = clap::ArgAction::Count)]
+    client_cert_auth: u8,
 
     /// Enable peer client certificate authentication (etcd compat, ignored).
-    #[arg(long, default_value_t = false, hide = true)]
-    peer_client_cert_auth: bool,
+    #[arg(long, hide = true, action = clap::ArgAction::Count)]
+    peer_client_cert_auth: u8,
 
     /// Log output targets (etcd compat, ignored — rusd uses --log-level).
     #[arg(long, hide = true)]
@@ -274,15 +275,15 @@ async fn main() -> anyhow::Result<()> {
 /// Log warnings for etcd-compatible flags that are accepted but ignored.
 fn log_compat_flag_warnings(args: &Args) {
     if args.auto_tls {
-        info!("--auto-tls flag accepted for etcd compatibility (ignored, use --cert-file/--key-file)");
+        info!("--auto-tls enabled: will generate self-signed TLS certificate for client connections");
     }
     if args.peer_auto_tls {
-        info!("--peer-auto-tls flag accepted for etcd compatibility (ignored, use --peer-cert-file/--peer-key-file)");
+        info!("--peer-auto-tls enabled: will generate self-signed TLS certificate for peer connections");
     }
-    if args.client_cert_auth {
+    if args.client_cert_auth > 0 {
         info!("--client-cert-auth flag accepted for etcd compatibility (ignored, inferred from --trusted-ca-file)");
     }
-    if args.peer_client_cert_auth {
+    if args.peer_client_cert_auth > 0 {
         info!("--peer-client-cert-auth flag accepted for etcd compatibility (ignored)");
     }
     if args.log_outputs.is_some() {
@@ -388,6 +389,9 @@ fn build_server_config(args: &Args) -> anyhow::Result<ServerConfig> {
         peer_tls_cert_file: args.peer_cert_file.clone(),
         peer_tls_key_file: args.peer_key_file.clone(),
         peer_tls_trusted_ca_file: args.peer_trusted_ca_file.clone(),
+        auto_tls: args.auto_tls,
+        peer_auto_tls: args.peer_auto_tls,
+        client_crl_file: args.client_crl_file.clone(),
     })
 }
 
