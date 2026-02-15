@@ -411,10 +411,129 @@ async fn test_compaction() {
 }
 
 #[tokio::test]
-#[ignore] // Snapshot RPC returns Unimplemented
 async fn test_snapshot_restore() {
-    // Intentionally left as an ignored test because the Snapshot RPC
-    // is not yet implemented in rusd.
+    let (endpoint, shutdown_tx, _handle, _tmpdir) = start_test_server().await;
+    let mut kv = KvClient::connect(endpoint.clone())
+        .await
+        .expect("kv connect");
+    let mut maintenance = MaintenanceClient::connect(endpoint.clone())
+        .await
+        .expect("maintenance connect");
+
+    // Write some data
+    for i in 0..5 {
+        kv.put(PutRequest {
+            key: format!("snap-key-{}", i).into_bytes(),
+            value: format!("snap-val-{}", i).into_bytes(),
+            ..Default::default()
+        })
+        .await
+        .expect("put failed");
+    }
+
+    // Create a snapshot
+    let mut stream = maintenance
+        .snapshot(rusd::etcdserverpb::SnapshotRequest {})
+        .await
+        .expect("snapshot failed")
+        .into_inner();
+
+    let mut snapshot_data = Vec::new();
+    while let Some(resp) = stream
+        .message()
+        .await
+        .expect("snapshot stream error")
+    {
+        snapshot_data.extend_from_slice(&resp.blob);
+        if resp.remaining_bytes == 0 {
+            break;
+        }
+    }
+
+    // Verify snapshot is non-empty
+    assert!(
+        !snapshot_data.is_empty(),
+        "Snapshot data should not be empty"
+    );
+
+    // Verify data is still readable
+    let resp = kv
+        .range(RangeRequest {
+            key: b"snap-key-".to_vec(),
+            range_end: b"snap-key-\xff".to_vec(),
+            ..Default::default()
+        })
+        .await
+        .expect("range failed");
+
+    assert_eq!(
+        resp.get_ref().kvs.len(),
+        5,
+        "Should have 5 keys after snapshot"
+    );
+
+    let _ = shutdown_tx.send(());
+}
+
+#[tokio::test]
+async fn test_defragment() {
+    let (endpoint, shutdown_tx, _handle, _tmpdir) = start_test_server().await;
+    let mut maintenance = MaintenanceClient::connect(endpoint.clone())
+        .await
+        .expect("maintenance connect");
+
+    // Defragment should succeed on any node
+    let resp = maintenance
+        .defragment(rusd::etcdserverpb::DefragmentRequest {})
+        .await
+        .expect("defragment failed");
+
+    assert!(
+        resp.get_ref().header.is_some(),
+        "Defragment response should contain a header"
+    );
+
+    let _ = shutdown_tx.send(());
+}
+
+#[tokio::test]
+async fn test_hash() {
+    let (endpoint, shutdown_tx, _handle, _tmpdir) = start_test_server().await;
+    let mut kv = KvClient::connect(endpoint.clone())
+        .await
+        .expect("kv connect");
+    let mut maintenance = MaintenanceClient::connect(endpoint.clone())
+        .await
+        .expect("maintenance connect");
+
+    // Get hash before writing data
+    let hash1 = maintenance
+        .hash(rusd::etcdserverpb::HashRequest {})
+        .await
+        .expect("hash failed")
+        .into_inner()
+        .hash;
+
+    // Write some data
+    kv.put(PutRequest {
+        key: b"hash-key".to_vec(),
+        value: b"hash-val".to_vec(),
+        ..Default::default()
+    })
+    .await
+    .expect("put failed");
+
+    // Hash should change after writing data
+    let hash2 = maintenance
+        .hash(rusd::etcdserverpb::HashRequest {})
+        .await
+        .expect("hash failed")
+        .into_inner()
+        .hash;
+
+    assert_ne!(hash1, hash2, "Hash should change after data modification");
+
+    let _ = shutdown_tx.send(());
 }
 
 #[tokio::test]
@@ -431,12 +550,14 @@ async fn test_member_list() {
         .expect("member_list failed");
 
     // The RPC should succeed and contain a valid header.
-    // NOTE: The current server implementation initializes ClusterService with
-    // an empty in-memory member list (not wired to ClusterManager), so the
-    // members vec may be empty. We verify the RPC itself works correctly.
+    // Now wired to ClusterManager, members should contain the test node.
     assert!(
         resp.get_ref().header.is_some(),
         "MemberList response should contain a header"
+    );
+    assert!(
+        !resp.get_ref().members.is_empty(),
+        "MemberList should contain at least one member"
     );
 
     let _ = shutdown_tx.send(());

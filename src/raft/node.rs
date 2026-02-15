@@ -61,6 +61,11 @@ impl CommitNotifier {
     }
 }
 
+/// Callback to create a snapshot of the store.
+pub type SnapshotCreateFn = Arc<dyn Fn() -> Vec<u8> + Send + Sync>;
+/// Callback to restore the store from snapshot data.
+pub type SnapshotRestoreFn = Arc<dyn Fn(&[u8]) -> Result<(), String> + Send + Sync>;
+
 pub struct RaftNode {
     config: Arc<RaftConfig>,
     state: Arc<RaftState>,
@@ -78,6 +83,10 @@ pub struct RaftNode {
     message_rx: Arc<Mutex<tokio::sync::mpsc::Receiver<(u64, RaftMessage)>>>,
     #[allow(dead_code)]
     message_tx: Arc<tokio::sync::mpsc::Sender<(u64, RaftMessage)>>,
+
+    // Snapshot callbacks for creating and restoring store snapshots
+    create_snapshot_fn: Option<SnapshotCreateFn>,
+    restore_snapshot_fn: Option<SnapshotRestoreFn>,
 }
 
 impl RaftNode {
@@ -86,6 +95,17 @@ impl RaftNode {
         log: Arc<RaftLog>,
         transport: Arc<dyn RaftTransport>,
         apply_tx: tokio::sync::mpsc::Sender<LogEntry>,
+    ) -> RaftResult<Self> {
+        Self::with_snapshot_callbacks(config, log, transport, apply_tx, None, None)
+    }
+
+    pub fn with_snapshot_callbacks(
+        config: RaftConfig,
+        log: Arc<RaftLog>,
+        transport: Arc<dyn RaftTransport>,
+        apply_tx: tokio::sync::mpsc::Sender<LogEntry>,
+        create_snapshot_fn: Option<SnapshotCreateFn>,
+        restore_snapshot_fn: Option<SnapshotRestoreFn>,
     ) -> RaftResult<Self> {
         config.validate()?;
 
@@ -113,6 +133,8 @@ impl RaftNode {
             commit_notifier,
             message_tx: Arc::new(message_tx),
             message_rx: Arc::new(Mutex::new(message_rx)),
+            create_snapshot_fn,
+            restore_snapshot_fn,
         })
     }
 
@@ -451,6 +473,50 @@ impl RaftNode {
         for peer_id in peers {
             let next_idx = self.state.next_index(peer_id).unwrap_or(1);
 
+            // If the follower is behind our first log index, send a snapshot instead
+            if next_idx < self.log.first_index() {
+                if let Some(snapshot_data) = self.log.get_snapshot_data() {
+                    let snapshot_index = self.log.snapshot_index();
+                    let snapshot_term = self.log.snapshot_term();
+                    let transport_clone = self.transport.clone();
+                    let state_clone = self.state.clone();
+                    let term = self.state.term();
+                    let leader_id = self.config.id;
+
+                    let req = crate::raft::transport::InstallSnapshotRequest {
+                        term,
+                        leader_id,
+                        last_included_index: snapshot_index,
+                        last_included_term: snapshot_term,
+                        offset: 0,
+                        data: snapshot_data,
+                        done: true,
+                    };
+
+                    tokio::spawn(async move {
+                        match transport_clone.send_install_snapshot(peer_id, req).await {
+                            Ok(_resp) => {
+                                state_clone.set_match_index(peer_id, snapshot_index);
+                                state_clone.set_next_index(peer_id, snapshot_index + 1);
+                                info!(
+                                    peer_id = peer_id,
+                                    snapshot_index = snapshot_index,
+                                    "Sent snapshot to follower"
+                                );
+                            }
+                            Err(e) => {
+                                warn!(
+                                    peer_id = peer_id,
+                                    error = %e,
+                                    "Failed to send snapshot to follower"
+                                );
+                            }
+                        }
+                    });
+                    continue;
+                }
+            }
+
             // Determine previous log index and term
             let prev_log_index = if next_idx > 0 { next_idx - 1 } else { 0 };
             let prev_log_term = self.log.term_at(prev_log_index).ok().flatten().unwrap_or(0);
@@ -664,11 +730,33 @@ impl RaftNode {
         *self.election_timer.lock().unwrap() =
             Some(Instant::now() + Self::random_election_timeout_static(&self.config));
 
-        // In a real implementation, we'd stream the snapshot data
         if req.done {
-            let _ = self
-                .log
-                .save_snapshot(req.last_included_index, req.last_included_term);
+            // Restore the store from snapshot data
+            if let Some(ref restore_fn) = self.restore_snapshot_fn {
+                match restore_fn(&req.data) {
+                    Ok(()) => {
+                        info!(
+                            "Restored snapshot at index={} term={}",
+                            req.last_included_index, req.last_included_term
+                        );
+                    }
+                    Err(e) => {
+                        warn!("Failed to restore snapshot: {}", e);
+                    }
+                }
+            }
+
+            // Save snapshot metadata and truncate log
+            let _ = self.log.save_snapshot_with_data(
+                req.last_included_index,
+                req.last_included_term,
+                req.data,
+            );
+            let _ = self.log.truncate_before(req.last_included_index + 1);
+
+            // Update state
+            self.state.set_commit_index(req.last_included_index);
+            self.state.set_last_applied(req.last_included_index);
         }
 
         InstallSnapshotResponse { term: current_term }
@@ -717,15 +805,26 @@ impl RaftNode {
     }
 
     async fn trigger_snapshot(&self) -> RaftResult<()> {
-        // In a real implementation, this would save a snapshot to disk
-        // For now, just truncate the log
         let snapshot_index = self
             .log
             .last_index()
             .saturating_sub(self.config.snapshot_threshold / 2);
         if snapshot_index > self.log.snapshot_index() {
             let snapshot_term = self.log.term_at(snapshot_index).ok().flatten().unwrap_or(0);
-            self.log.save_snapshot(snapshot_index, snapshot_term)?;
+
+            // Create actual snapshot data from the store if callback is available
+            if let Some(ref create_fn) = self.create_snapshot_fn {
+                let data = create_fn();
+                self.log
+                    .save_snapshot_with_data(snapshot_index, snapshot_term, data)?;
+                info!(
+                    "Created snapshot at index={} term={}",
+                    snapshot_index, snapshot_term
+                );
+            } else {
+                self.log.save_snapshot(snapshot_index, snapshot_term)?;
+            }
+
             self.log.truncate_before(snapshot_index + 1)?;
         }
 
@@ -824,13 +923,30 @@ impl RaftNode {
         Ok(())
     }
 
-    /// Propose a configuration change.
-    pub async fn propose_conf_change(&self, _data: Vec<u8>) -> RaftResult<()> {
+    /// Propose a configuration change through the Raft log.
+    pub async fn propose_conf_change(&self, data: Vec<u8>) -> RaftResult<u64> {
         if !self.is_leader() {
             return Err(RaftError::NotLeader);
         }
-        // TODO: Implement configuration change proposal
-        Ok(())
+
+        let index = self.log.last_index() + 1;
+        let entry = LogEntry {
+            index,
+            term: self.state.term(),
+            data,
+            entry_type: EntryType::ConfigChange,
+        };
+
+        self.log.append(&[entry])?;
+
+        // Single-node: immediately commit
+        if self.config.peers.is_empty() {
+            self.state.set_commit_index(index);
+        }
+
+        self.send_heartbeats().await?;
+
+        Ok(index)
     }
 
     /// Generate a lease ID.

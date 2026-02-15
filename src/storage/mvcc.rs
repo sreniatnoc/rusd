@@ -582,6 +582,80 @@ impl MvccStore {
         }
         Ok(())
     }
+
+    /// Creates a full snapshot of the MVCC store including revision counters.
+    pub fn create_snapshot(&self) -> StorageResult<Vec<u8>> {
+        let mut snapshot = Vec::new();
+        let current_rev = self.current_revision();
+        let compact_rev = self.compact_revision();
+        snapshot.extend_from_slice(&current_rev.to_le_bytes());
+        snapshot.extend_from_slice(&compact_rev.to_le_bytes());
+        let backend_data = self
+            .backend
+            .snapshot()
+            .map_err(|e| StorageError::Backend(e))?;
+        snapshot.extend_from_slice(&backend_data);
+        Ok(snapshot)
+    }
+
+    /// Restores the MVCC store from a snapshot.
+    pub fn restore_snapshot(&self, data: &[u8]) -> StorageResult<()> {
+        if data.len() < 16 {
+            return Err(StorageError::Mvcc(
+                "Invalid snapshot data: too short".to_string(),
+            ));
+        }
+        let current_rev = i64::from_le_bytes(data[0..8].try_into().unwrap());
+        let compact_rev = i64::from_le_bytes(data[8..16].try_into().unwrap());
+
+        // Clear existing data and restore from snapshot
+        self.backend
+            .clear_all()
+            .map_err(|e| StorageError::Backend(e))?;
+        self.backend
+            .restore(&data[16..])
+            .map_err(|e| StorageError::Backend(e))?;
+
+        // Restore revision counters
+        self.current_revision.store(current_rev, Ordering::SeqCst);
+        self.compact_revision.store(compact_rev, Ordering::SeqCst);
+
+        // Rebuild key index from restored kv tree
+        self.rebuild_key_index()?;
+
+        info!(
+            "Restored MVCC store from snapshot at revision {}",
+            current_rev
+        );
+        Ok(())
+    }
+
+    /// Rebuilds the in-memory key index from the kv tree.
+    fn rebuild_key_index(&self) -> StorageResult<()> {
+        let mut index = self.key_index.write();
+        *index = KeyIndex::new();
+
+        let entries = self
+            .backend
+            .scan_prefix("kv", b"", 0)
+            .map_err(|e| StorageError::Backend(e))?;
+
+        for (key, data) in entries {
+            if let Ok(kv) = KeyValue::decode(key.clone(), &data) {
+                index.put(
+                    &key,
+                    crate::storage::index::Revision::new(kv.mod_revision, 0),
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Returns a reference to the underlying backend.
+    pub fn backend(&self) -> &Arc<Backend> {
+        &self.backend
+    }
 }
 
 /// Represents a watch event (key-value change).

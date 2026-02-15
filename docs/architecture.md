@@ -85,3 +85,46 @@ Six sled trees:
 - `meta` - Server metadata (revisions, compact state)
 - `lease` - Lease data
 - `auth` - Authentication data (users, roles)
+
+## Snapshot Transfer
+
+When a follower falls too far behind the leader's log (i.e., the leader has already compacted the entries the follower needs), the leader sends its full state via the `InstallSnapshot` RPC instead of `AppendEntries`.
+
+### Snapshot Create
+1. Leader's `trigger_snapshot()` invokes a callback that serializes the MVCC store
+2. Snapshot data format: `[current_revision (8 bytes)][compact_revision (8 bytes)][sled export data]`
+3. Snapshot is cached in `RaftLog` alongside the snapshot index and term
+
+### Snapshot Install
+1. Leader detects follower needs snapshot when `next_index < log.first_index()`
+2. Sends `InstallSnapshot` RPC with the cached snapshot data
+3. Follower receives snapshot and invokes the restore callback:
+   - Clears all six sled trees
+   - Restores sled data from the snapshot payload
+   - Rebuilds the in-memory `KeyIndex` from the restored `kv` tree
+   - Updates `current_revision` and `compact_revision` atomics
+4. Follower resets its commit and applied indices to the snapshot index
+
+### Snapshot Streaming (Maintenance API)
+The `Snapshot` RPC streams the MVCC snapshot to clients in 64KB chunks via gRPC server-streaming, compatible with `etcdctl snapshot save`.
+
+## Dynamic Cluster Membership
+
+Cluster membership changes (add, remove, update, promote) go through Raft consensus as `ConfigChange` log entries:
+
+1. Client sends request to leader via Cluster gRPC API
+2. Leader validates request and updates `ClusterManager`
+3. Leader proposes a `ConfigChange` entry to the Raft log
+4. Entry is replicated to followers and committed at majority
+5. On apply, all nodes process the membership change
+
+This ensures consistent cluster membership across all nodes. Learner nodes can be added first and promoted to voting members once they catch up.
+
+## TLS/mTLS
+
+rusd supports TLS encryption for both client-to-server and peer-to-peer connections:
+
+- **Client TLS**: `--cert-file`, `--key-file`, `--trusted-ca-file` flags
+- **Peer TLS**: `--peer-cert-file`, `--peer-key-file`, `--peer-trusted-ca-file` flags
+- **mTLS**: When `--client-cert-auth` or `--peer-client-cert-auth` is set, clients must present valid certificates
+- Certificate loading uses `rustls` with no OpenSSL dependency

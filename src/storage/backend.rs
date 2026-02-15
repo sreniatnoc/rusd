@@ -427,10 +427,32 @@ impl Backend {
         self.db.size_on_disk().unwrap_or(0)
     }
 
+    /// Clears all data from all trees.
+    pub fn clear_all(&self) -> BackendResult<()> {
+        self.kv_tree.clear()?;
+        self.kv_rev_tree.clear()?;
+        self.index_tree.clear()?;
+        self.meta_tree.clear()?;
+        self.lease_tree.clear()?;
+        self.auth_tree.clear()?;
+        info!("Cleared all backend trees");
+        Ok(())
+    }
+
     /// Defragments the database to reclaim disk space.
+    /// Flushes all data to disk and triggers sled's internal GC.
     pub fn defragment(&self) -> BackendResult<()> {
-        // Flush and compact all data
+        // Flush all pending writes
         self.db.flush()?;
+        // Sled's GC is automatic, but flushing ensures all data is on disk
+        // and any reclaimable pages are freed
+        let size_before = self.size();
+        self.db.flush()?;
+        let size_after = self.size();
+        info!(
+            "Defragmentation complete: {} -> {} bytes",
+            size_before, size_after
+        );
         Ok(())
     }
 

@@ -25,7 +25,7 @@ rusd is a distributed key-value store that serves as a drop-in replacement for e
 rusd is built on four pillars:
 
 1. **MVCC Store** with dual-write to `kv` (latest values) and `kv_rev` (full revision history)
-2. **Raft Consensus** with PreVote, real gRPC peer transport, and deterministic member IDs
+2. **Raft Consensus** with PreVote, real gRPC peer transport, snapshot transfer, and dynamic membership
 3. **Watch Hub** using DashMap + crossbeam channels for real-time event streaming
 4. **sled Backend** providing lock-free B+ tree storage
 
@@ -38,6 +38,11 @@ rusd is built on four pillars:
 ## Status
 
 - 34/34 Kubernetes compliance tests pass (Kind v1.35)
-- 44 unit tests + 11 integration tests
+- 48 unit tests + 15 integration tests + 7 multi-node Raft tests + 8 TLS tests
 - Full KV, Watch, Lease, Auth, Cluster, Maintenance APIs
-- Single-node production ready; multi-node Raft in progress
+- Multi-node Raft with leader election, log replication, and snapshot transfer
+- TLS/mTLS support for both client and peer connections
+- Dynamic cluster membership (add/remove/promote members)
+- Snapshot streaming and restore via Maintenance API
+- Defragmentation and hash verification
+- Chaos testing: leader kill + recovery, data integrity under node churn

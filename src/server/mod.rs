@@ -338,9 +338,28 @@ impl RusdServer {
             data_dir: config.data_dir.clone(),
             pre_vote: true,
         };
+        // Create snapshot callbacks for the Raft node
+        let store_for_create = store.clone();
+        let create_snapshot_fn: crate::raft::node::SnapshotCreateFn =
+            Arc::new(move || store_for_create.create_snapshot().unwrap_or_default());
+        let store_for_restore = store.clone();
+        let restore_snapshot_fn: crate::raft::node::SnapshotRestoreFn =
+            Arc::new(move |data: &[u8]| {
+                store_for_restore
+                    .restore_snapshot(data)
+                    .map_err(|e| e.to_string())
+            });
+
         let raft = Arc::new(
-            RaftNode::new(raft_config, raft_log, transport, apply_tx)
-                .map_err(|e| anyhow::anyhow!("Failed to initialize Raft node: {}", e))?,
+            RaftNode::with_snapshot_callbacks(
+                raft_config,
+                raft_log,
+                transport,
+                apply_tx,
+                Some(create_snapshot_fn),
+                Some(restore_snapshot_fn),
+            )
+            .map_err(|e| anyhow::anyhow!("Failed to initialize Raft node: {}", e))?,
         );
         info!(member_id = member_id, "Raft node initialized");
 
@@ -484,11 +503,11 @@ impl RusdServer {
         ));
         let lease_service = LeaseService::new(api_lease_mgr);
 
-        // ClusterService needs raft and a shared member list
-        let members = Arc::new(parking_lot::RwLock::new(Vec::new()));
-        let cluster_service = ClusterService::new(self.raft.clone(), members);
+        // ClusterService uses the ClusterManager for proper membership tracking
+        let cluster_service = ClusterService::new(self.raft.clone(), self.cluster_mgr.clone());
 
-        let maintenance_service = MaintenanceService::new(self.store.clone(), self.raft.clone());
+        let maintenance_service =
+            MaintenanceService::new(self.store.clone(), self.backend.clone(), self.raft.clone());
 
         // AuthService needs the AuthManager wrapper
         let auth_mgr_for_service = Arc::new(crate::api::auth_service::AuthManager::new(
@@ -818,10 +837,17 @@ async fn process_apply_channel(
                 }
             }
             crate::raft::EntryType::ConfigChange => {
-                info!("Processing config change entry at index {}", entry.index);
+                let data = String::from_utf8_lossy(&entry.data);
+                info!(
+                    "Processing config change at index {}: {}",
+                    entry.index, data
+                );
+                // Config changes are applied eagerly by the ClusterService
+                // on the leader. Followers just log them for now.
             }
             crate::raft::EntryType::Snapshot => {
                 info!("Processing snapshot entry at index {}", entry.index);
+                // Snapshot entries are handled by handle_install_snapshot
             }
         }
     }

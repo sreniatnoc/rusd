@@ -182,7 +182,7 @@ LOGGING:
 ## Testing
 
 ```bash
-# All tests (44 unit + 11 integration)
+# All tests (48 unit + 12 integration)
 cargo test
 
 # Unit tests only
@@ -190,6 +190,15 @@ cargo test --lib
 
 # Integration tests (starts real gRPC server per test)
 cargo test --test integration_test
+
+# Multi-node tests (3-node Raft cluster)
+./scripts/multi-node-test.sh
+
+# TLS/mTLS tests
+./scripts/tls-test.sh
+
+# K8s compliance tests (requires Kind)
+./scripts/k8s-test.sh
 
 # Benchmarks (Criterion)
 cargo bench
@@ -236,20 +245,18 @@ proto/
 - Watch with prefix, prev_kv, and revision-based catchup
 - Leases with proper key cleanup on revoke/expiry
 - Auth with users, roles, and RBAC
-- Raft leader election with PreVote and vote collection
-- Real gRPC peer transport (raftpb)
+- Raft consensus: leader election (PreVote), log replication, follower forwarding, failover
+- Multi-node Raft: 3-node clusters with real gRPC peer transport (7/7 tests pass)
+- TLS/mTLS support (rustls) with cert-based authentication (8/8 tests pass)
 - Deterministic member IDs (stable across restarts)
-- Kubernetes 34/34 compliance tests
-
-### In Progress
-- Multi-node Raft (transport is wired, event loop runs, but not yet validated end-to-end)
-- TLS support (rustls)
+- Kubernetes 34/34 compliance tests (Kind v1.35)
+- CI: 8 jobs all green (unit, integration, multi-node, K8s, TLS, benchmarks, lint)
 
 ### Not Yet Implemented
 - Snapshot transfer between nodes
 - Dynamic cluster membership changes
 - Defragmentation
-- etcd snapshot restore
+- etcd snapshot save/restore
 
 ## License
 

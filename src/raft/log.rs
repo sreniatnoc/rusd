@@ -24,6 +24,8 @@ pub struct RaftLog {
     last_term: AtomicU64,
     snapshot_index: AtomicU64,
     snapshot_term: AtomicU64,
+    /// Cached snapshot data for sending to followers
+    snapshot_data: parking_lot::Mutex<Option<Vec<u8>>>,
 }
 
 impl RaftLog {
@@ -35,6 +37,7 @@ impl RaftLog {
             last_term: AtomicU64::new(0),
             snapshot_index: AtomicU64::new(0),
             snapshot_term: AtomicU64::new(0),
+            snapshot_data: parking_lot::Mutex::new(None),
         };
 
         // Recover state from disk
@@ -263,5 +266,22 @@ impl RaftLog {
 
     pub fn snapshot_term(&self) -> u64 {
         self.snapshot_term.load(Ordering::Acquire)
+    }
+
+    /// Saves a snapshot with both metadata and data.
+    pub fn save_snapshot_with_data(
+        &self,
+        index: u64,
+        term: u64,
+        data: Vec<u8>,
+    ) -> RaftResult<()> {
+        self.save_snapshot(index, term)?;
+        *self.snapshot_data.lock() = Some(data);
+        Ok(())
+    }
+
+    /// Returns the latest snapshot data if available.
+    pub fn get_snapshot_data(&self) -> Option<Vec<u8>> {
+        self.snapshot_data.lock().clone()
     }
 }

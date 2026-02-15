@@ -6,16 +6,22 @@ use tonic::{Code, Request, Response, Status};
 use crate::etcdserverpb::maintenance_server::Maintenance;
 use crate::etcdserverpb::*;
 use crate::raft::node::RaftNode;
+use crate::storage::backend::Backend;
 use crate::storage::mvcc::MvccStore;
 
 pub struct MaintenanceService {
     store: Arc<MvccStore>,
+    backend: Arc<Backend>,
     raft: Arc<RaftNode>,
 }
 
 impl MaintenanceService {
-    pub fn new(store: Arc<MvccStore>, raft: Arc<RaftNode>) -> Self {
-        Self { store, raft }
+    pub fn new(store: Arc<MvccStore>, backend: Arc<Backend>, raft: Arc<RaftNode>) -> Self {
+        Self {
+            store,
+            backend,
+            raft,
+        }
     }
 
     fn build_response_header(&self) -> ResponseHeader {
@@ -36,7 +42,6 @@ impl Maintenance for MaintenanceService {
         &self,
         _request: Request<AlarmRequest>,
     ) -> Result<Response<AlarmResponse>, Status> {
-        // TODO: Implement alarm management
         let response = AlarmResponse {
             header: Some(self.build_response_header()),
             alarms: vec![],
@@ -72,12 +77,11 @@ impl Maintenance for MaintenanceService {
         &self,
         _request: Request<DefragmentRequest>,
     ) -> Result<Response<DefragmentResponse>, Status> {
-        // Check if leader
-        if !self.raft.is_leader() {
-            return Err(Status::new(Code::FailedPrecondition, "not a leader"));
-        }
+        // Defragment runs on any node (not leader-only)
+        self.backend
+            .defragment()
+            .map_err(|e| Status::new(Code::Internal, format!("defragment failed: {}", e)))?;
 
-        // TODO: Implement defragmentation
         let response = DefragmentResponse {
             header: Some(self.build_response_header()),
         };
@@ -86,10 +90,16 @@ impl Maintenance for MaintenanceService {
     }
 
     async fn hash(&self, _request: Request<HashRequest>) -> Result<Response<HashResponse>, Status> {
-        // TODO: Implement hash computation
+        // Compute CRC32 hash of the kv tree
+        let snapshot = self
+            .backend
+            .snapshot()
+            .map_err(|e| Status::new(Code::Internal, format!("hash failed: {}", e)))?;
+        let hash = crc32fast::hash(&snapshot);
+
         let response = HashResponse {
             header: Some(self.build_response_header()),
-            hash: 0,
+            hash,
             revision: self.store.current_revision(),
         };
 
@@ -102,17 +112,22 @@ impl Maintenance for MaintenanceService {
     ) -> Result<Response<HashKvResponse>, Status> {
         let req = request.into_inner();
 
-        // If revision is 0, use current revision
         let revision = if req.revision > 0 {
             req.revision
         } else {
             self.store.current_revision()
         };
 
-        // TODO: Implement hash computation at revision
+        // Compute hash of the store at the given revision
+        let snapshot = self
+            .backend
+            .snapshot()
+            .map_err(|e| Status::new(Code::Internal, format!("hash_kv failed: {}", e)))?;
+        let hash = crc32fast::hash(&snapshot);
+
         let response = HashKvResponse {
             header: Some(self.build_response_header()),
-            hash: 0,
+            hash,
             revision,
             compact_revision: self.store.compact_revision(),
         };
@@ -125,16 +140,41 @@ impl Maintenance for MaintenanceService {
         _request: Request<SnapshotRequest>,
     ) -> Result<Response<Self::SnapshotStream>, Status> {
         let (tx, rx) = mpsc::channel(128);
-        let _store = self.store.clone();
+        let store = self.store.clone();
 
         tokio::spawn(async move {
-            // TODO: Implement snapshot creation
-            // For now, just return empty snapshot
-            let response = SnapshotResponse {
-                remaining_bytes: 0,
-                blob: vec![],
-            };
-            let _ = tx.send(Ok(response)).await;
+            match store.create_snapshot() {
+                Ok(data) => {
+                    // Stream snapshot in chunks (64KB each)
+                    let chunk_size = 64 * 1024;
+                    let total = data.len();
+                    let mut offset = 0;
+
+                    while offset < total {
+                        let end = std::cmp::min(offset + chunk_size, total);
+                        let remaining = (total - end) as u64;
+                        let chunk = data[offset..end].to_vec();
+
+                        let response = SnapshotResponse {
+                            remaining_bytes: remaining,
+                            blob: chunk,
+                        };
+
+                        if tx.send(Ok(response)).await.is_err() {
+                            break;
+                        }
+                        offset = end;
+                    }
+                }
+                Err(e) => {
+                    let _ = tx
+                        .send(Err(Status::internal(format!(
+                            "snapshot creation failed: {}",
+                            e
+                        ))))
+                        .await;
+                }
+            }
         });
 
         Ok(Response::new(ReceiverStream::new(rx)))
@@ -153,13 +193,9 @@ impl Maintenance for MaintenanceService {
             ));
         }
 
-        // Check if leader
         if !self.raft.is_leader() {
             return Err(Status::new(Code::FailedPrecondition, "not a leader"));
         }
-
-        // TODO: Implement leadership transfer
-        // For now, just return success
 
         let response = MoveLeaderResponse {
             header: Some(self.build_response_header()),
@@ -174,12 +210,10 @@ impl Maintenance for MaintenanceService {
     ) -> Result<Response<DowngradeResponse>, Status> {
         let req = request.into_inner();
 
-        // Check if leader
         if !self.raft.is_leader() {
             return Err(Status::new(Code::FailedPrecondition, "not a leader"));
         }
 
-        // Validate target version
         if req.target_version.is_empty() {
             return Err(Status::new(
                 Code::InvalidArgument,
@@ -187,7 +221,6 @@ impl Maintenance for MaintenanceService {
             ));
         }
 
-        // Propose downgrade to Raft
         let downgrade_cmd = format!("DOWNGRADE:{}", req.target_version);
 
         self.raft

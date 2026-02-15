@@ -1,18 +1,19 @@
 use std::sync::Arc;
 use tonic::{Code, Request, Response, Status};
 
+use crate::cluster::ClusterManager;
 use crate::etcdserverpb::cluster_server::Cluster;
 use crate::etcdserverpb::*;
 use crate::raft::node::RaftNode;
 
 pub struct ClusterService {
     raft: Arc<RaftNode>,
-    members: Arc<parking_lot::RwLock<Vec<Member>>>,
+    cluster_mgr: Arc<ClusterManager>,
 }
 
 impl ClusterService {
-    pub fn new(raft: Arc<RaftNode>, members: Arc<parking_lot::RwLock<Vec<Member>>>) -> Self {
-        Self { raft, members }
+    pub fn new(raft: Arc<RaftNode>, cluster_mgr: Arc<ClusterManager>) -> Self {
+        Self { raft, cluster_mgr }
     }
 
     fn build_response_header(&self) -> ResponseHeader {
@@ -23,6 +24,20 @@ impl ClusterService {
             raft_term: self.raft.current_term(),
         }
     }
+
+    fn members_to_proto(&self) -> Vec<Member> {
+        self.cluster_mgr
+            .list_members()
+            .into_iter()
+            .map(|m| Member {
+                id: m.id,
+                name: m.name.clone(),
+                peer_ur_ls: m.peer_urls.clone(),
+                client_ur_ls: m.client_urls.clone(),
+                is_learner: m.is_learner,
+            })
+            .collect()
+    }
 }
 
 #[tonic::async_trait]
@@ -31,44 +46,57 @@ impl Cluster for ClusterService {
         &self,
         request: Request<MemberAddRequest>,
     ) -> Result<Response<MemberAddResponse>, Status> {
-        let _req = request.into_inner();
+        let req = request.into_inner();
 
-        // Check if leader
         if !self.raft.is_leader() {
             return Err(Status::new(Code::FailedPrecondition, "not a leader"));
         }
 
-        // TODO: Validate peer_urls from proto
-        // Generate new member ID
-        let member_id = 1u64; // TODO: Use actual member ID generation
+        if req.peer_ur_ls.is_empty() {
+            return Err(Status::new(
+                Code::InvalidArgument,
+                "peer URLs must not be empty",
+            ));
+        }
 
-        // Create new member with minimal fields
-        let new_member = Member {
-            id: member_id,
-            ..Default::default()
-        };
+        // Generate a name from the peer URL for the new member
+        let member_name = format!("member-{}", self.cluster_mgr.member_count() + 1);
+
+        // Add member to cluster manager
+        let new_member = self
+            .cluster_mgr
+            .add_member(
+                member_name,
+                req.peer_ur_ls.clone(),
+                vec![], // client URLs will be set later via member_update
+                req.is_learner,
+            )
+            .map_err(|e| Status::new(Code::Internal, format!("add member failed: {}", e)))?;
 
         // Propose configuration change to Raft
-        let add_cmd = format!("ADD_MEMBER:{}", member_id);
-
+        let add_cmd = format!(
+            "ADD_MEMBER:{}:{}:{}",
+            new_member.id,
+            req.peer_ur_ls.join(","),
+            req.is_learner
+        );
         self.raft
             .propose_conf_change(add_cmd.into_bytes())
             .await
             .map_err(|e| Status::new(Code::Internal, format!("conf change failed: {}", e)))?;
 
-        // Add to members list
-        {
-            let mut members = self.members.write();
-            members.push(new_member.clone());
-        }
-
-        // Get all members
-        let members = self.members.read().clone();
+        let proto_member = Member {
+            id: new_member.id,
+            name: new_member.name.clone(),
+            peer_ur_ls: new_member.peer_urls.clone(),
+            client_ur_ls: new_member.client_urls.clone(),
+            is_learner: new_member.is_learner,
+        };
 
         let response = MemberAddResponse {
             header: Some(self.build_response_header()),
-            member: Some(new_member),
-            members,
+            member: Some(proto_member),
+            members: self.members_to_proto(),
         };
 
         Ok(Response::new(response))
@@ -87,31 +115,25 @@ impl Cluster for ClusterService {
             ));
         }
 
-        // Check if leader
         if !self.raft.is_leader() {
             return Err(Status::new(Code::FailedPrecondition, "not a leader"));
         }
 
+        // Remove from cluster manager
+        self.cluster_mgr
+            .remove_member(req.id)
+            .map_err(|e| Status::new(Code::Internal, format!("remove member failed: {}", e)))?;
+
         // Propose configuration change to Raft
         let remove_cmd = format!("REMOVE_MEMBER:{}", req.id);
-
         self.raft
             .propose_conf_change(remove_cmd.into_bytes())
             .await
             .map_err(|e| Status::new(Code::Internal, format!("conf change failed: {}", e)))?;
 
-        // Remove from members list
-        {
-            let mut members = self.members.write();
-            members.retain(|m| m.id != req.id);
-        }
-
-        // Get remaining members
-        let members = self.members.read().clone();
-
         let response = MemberRemoveResponse {
             header: Some(self.build_response_header()),
-            members,
+            members: self.members_to_proto(),
         };
 
         Ok(Response::new(response))
@@ -130,36 +152,25 @@ impl Cluster for ClusterService {
             ));
         }
 
-        // Check if leader
         if !self.raft.is_leader() {
             return Err(Status::new(Code::FailedPrecondition, "not a leader"));
         }
 
-        // Find and update member (if it exists)
-        {
-            let mut members = self.members.write();
-            if let Some(_member) = members.iter_mut().find(|m| m.id == req.id) {
-                // TODO: Update member client URLs from proto if field exists
-                // member.client_urls = req.client_urls.clone();
-            } else {
-                return Err(Status::new(Code::NotFound, "member not found"));
-            }
-        }
+        // Update client URLs in cluster manager
+        self.cluster_mgr
+            .update_member(req.id, req.client_ur_ls.clone())
+            .map_err(|e| Status::new(Code::Internal, format!("update member failed: {}", e)))?;
 
         // Propose configuration change to Raft
-        let update_cmd = format!("UPDATE_MEMBER:{}", req.id);
-
+        let update_cmd = format!("UPDATE_MEMBER:{}:{}", req.id, req.client_ur_ls.join(","));
         self.raft
             .propose_conf_change(update_cmd.into_bytes())
             .await
             .map_err(|e| Status::new(Code::Internal, format!("conf change failed: {}", e)))?;
 
-        // Get all members
-        let members = self.members.read().clone();
-
         let response = MemberUpdateResponse {
             header: Some(self.build_response_header()),
-            members,
+            members: self.members_to_proto(),
         };
 
         Ok(Response::new(response))
@@ -169,11 +180,9 @@ impl Cluster for ClusterService {
         &self,
         _request: Request<MemberListRequest>,
     ) -> Result<Response<MemberListResponse>, Status> {
-        let members = self.members.read().clone();
-
         let response = MemberListResponse {
             header: Some(self.build_response_header()),
-            members,
+            members: self.members_to_proto(),
         };
 
         Ok(Response::new(response))
@@ -192,42 +201,25 @@ impl Cluster for ClusterService {
             ));
         }
 
-        // Check if leader
         if !self.raft.is_leader() {
             return Err(Status::new(Code::FailedPrecondition, "not a leader"));
         }
 
-        // Find and promote member
-        {
-            let mut members = self.members.write();
-            if let Some(member) = members.iter_mut().find(|m| m.id == req.id) {
-                if member.is_learner {
-                    member.is_learner = false;
-                } else {
-                    return Err(Status::new(
-                        Code::FailedPrecondition,
-                        "member is already a voting member",
-                    ));
-                }
-            } else {
-                return Err(Status::new(Code::NotFound, "member not found"));
-            }
-        }
+        // Promote learner to voter in cluster manager
+        self.cluster_mgr
+            .promote_member(req.id)
+            .map_err(|e| Status::new(Code::Internal, format!("promote member failed: {}", e)))?;
 
         // Propose configuration change to Raft
         let promote_cmd = format!("PROMOTE_MEMBER:{}", req.id);
-
         self.raft
             .propose_conf_change(promote_cmd.into_bytes())
             .await
             .map_err(|e| Status::new(Code::Internal, format!("conf change failed: {}", e)))?;
 
-        // Get all members
-        let members = self.members.read().clone();
-
         let response = MemberPromoteResponse {
             header: Some(self.build_response_header()),
-            members,
+            members: self.members_to_proto(),
         };
 
         Ok(Response::new(response))

@@ -107,10 +107,45 @@ kubectl get pods -n rusd-test
 kind delete cluster --name rusd-test
 ```
 
+## Run a Multi-Node Cluster
+
+```bash
+# Start a 3-node cluster
+./target/release/rusd --name node1 \
+  --listen-client-urls http://127.0.0.1:2379 \
+  --listen-peer-urls http://127.0.0.1:2380 \
+  --initial-cluster "node1=http://127.0.0.1:2380,node2=http://127.0.0.1:2480,node3=http://127.0.0.1:2580" &
+
+./target/release/rusd --name node2 \
+  --listen-client-urls http://127.0.0.1:2479 \
+  --listen-peer-urls http://127.0.0.1:2480 \
+  --initial-cluster "node1=http://127.0.0.1:2380,node2=http://127.0.0.1:2480,node3=http://127.0.0.1:2580" &
+
+./target/release/rusd --name node3 \
+  --listen-client-urls http://127.0.0.1:2579 \
+  --listen-peer-urls http://127.0.0.1:2580 \
+  --initial-cluster "node1=http://127.0.0.1:2380,node2=http://127.0.0.1:2480,node3=http://127.0.0.1:2580" &
+
+# Verify cluster health
+etcdctl --endpoints=http://127.0.0.1:2379,http://127.0.0.1:2479,http://127.0.0.1:2579 endpoint health
+etcdctl member list
+```
+
+## Run with TLS
+
+```bash
+./target/release/rusd --name node1 \
+  --listen-client-urls https://127.0.0.1:2379 \
+  --cert-file certs/server.crt \
+  --key-file certs/server.key \
+  --trusted-ca-file certs/ca.crt \
+  --client-cert-auth
+```
+
 ## Run Tests
 
 ```bash
-# All tests (44 unit + 11 integration)
+# All tests (48 unit + 15 integration)
 cargo test
 
 # Unit tests only
@@ -118,6 +153,15 @@ cargo test --lib
 
 # Integration tests (starts gRPC server per test on random ports)
 cargo test --test integration_test
+
+# Multi-node Raft tests
+cargo test --test multi_node_test
+
+# TLS tests
+cargo test tls
+
+# Chaos tests (leader kill + recovery, data integrity under churn)
+./scripts/chaos-test.sh
 
 # With verbose output
 RUST_LOG=rusd=debug cargo test -- --nocapture
