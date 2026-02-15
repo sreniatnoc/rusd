@@ -250,13 +250,19 @@ proto/
 - TLS/mTLS support (rustls) with cert-based authentication (8/8 tests pass)
 - Deterministic member IDs (stable across restarts)
 - Kubernetes 34/34 compliance tests (Kind v1.35)
+- Snapshot transfer (InstallSnapshot RPC) for follower catchup
+- Dynamic cluster membership (add/remove/promote via Raft ConfigChange)
+- Defragmentation, hash verification (CRC32)
+- Snapshot streaming via Maintenance API (etcdctl snapshot save compatible)
+- Chaos tested: leader kill + recovery, data integrity under node churn (11/11 pass)
 - CI: 8 jobs all green (unit, integration, multi-node, K8s, TLS, benchmarks, lint)
+- **24/24 etcd API compatibility**
 
-### Not Yet Implemented
-- Snapshot transfer between nodes
-- Dynamic cluster membership changes
-- Defragmentation
-- etcd snapshot save/restore
+### Roadmap
+- etcd e2e test suite compatibility
+- Jepsen-style linearizability testing
+- Multi-node Kubernetes (3-node rusd backing Kind cluster)
+- Snapshot compaction and automatic log truncation
 
 ## License
 
