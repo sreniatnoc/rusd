@@ -150,12 +150,19 @@ impl Kv for KvService {
         };
 
         // Perform the range query
-        // When range_end is empty, we need to query a single key by using the next byte after key
+        // etcd range_end conventions:
+        //   empty     → single-key lookup (append \0 for exclusive upper bound)
+        //   [0x00]    → special sentinel meaning "no upper bound" (all keys from key onwards)
+        //   other     → literal exclusive upper bound
         let effective_range_end = if req.range_end.is_empty() {
             // For single-key lookup, append a null byte to create an exclusive upper bound
             let mut end = req.key.clone();
             end.push(0);
             end
+        } else if req.range_end == vec![0] {
+            // etcd convention: range_end="\x00" means unbounded (no upper limit).
+            // Pass empty to index layer which treats empty end as unbounded.
+            vec![]
         } else {
             req.range_end.clone()
         };
@@ -307,8 +314,8 @@ impl Kv for KvService {
     ) -> Result<Response<DeleteRangeResponse>, Status> {
         let req = request.into_inner();
 
-        // Validate input
-        if req.key.is_empty() {
+        // Validate input — allow empty key if range_end is set (prefix delete)
+        if req.key.is_empty() && req.range_end.is_empty() {
             return Err(Status::new(Code::InvalidArgument, "key must not be empty"));
         }
 
@@ -317,16 +324,20 @@ impl Kv for KvService {
             return Err(Status::new(Code::FailedPrecondition, "not a leader"));
         }
 
+        // Compute effective range_end (same etcd conventions as range)
+        let effective_range_end = if req.range_end.is_empty() {
+            let mut end = req.key.clone();
+            end.push(0);
+            end
+        } else if req.range_end == vec![0] {
+            // etcd convention: range_end="\x00" means unbounded
+            vec![]
+        } else {
+            req.range_end.clone()
+        };
+
         // Get previous values if requested
         let prev_kvs = if req.prev_kv {
-            let effective_range_end = if req.range_end.is_empty() {
-                // For single-key lookup, append a null byte to create an exclusive upper bound
-                let mut end = req.key.clone();
-                end.push(0);
-                end
-            } else {
-                req.range_end.clone()
-            };
             match self.store.range(
                 &req.key,
                 &effective_range_end,
@@ -369,16 +380,6 @@ impl Kv for KvService {
                 })?
                 .map_err(|_| Status::new(Code::Internal, "commit notification channel closed"))?;
         }
-
-        // Apply the delete operation
-        let effective_range_end = if req.range_end.is_empty() {
-            // For single-key delete, append a null byte to create an exclusive upper bound
-            let mut end = req.key.clone();
-            end.push(0);
-            end
-        } else {
-            req.range_end.clone()
-        };
         let (del_revision, deleted_kvs) =
             self.store
                 .delete_range(&req.key, &effective_range_end)

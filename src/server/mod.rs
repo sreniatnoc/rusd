@@ -549,6 +549,10 @@ impl RusdServer {
             self.config.advertise_client_urls.join(", ")
         );
 
+        // etcd e2e test framework blocks until this exact line appears on stdout.
+        // Must use println! (stdout), NOT info!/tracing (stderr).
+        println!("ready to serve client requests");
+
         // Run server until shutdown signal or error
         server.await?;
 
