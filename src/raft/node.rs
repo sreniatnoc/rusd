@@ -887,6 +887,11 @@ impl RaftNode {
         self.state.is_leader()
     }
 
+    /// Check if the cluster has an elected leader (may or may not be this node).
+    pub fn has_leader(&self) -> bool {
+        self.state.leader_id().is_some()
+    }
+
     /// Get the node ID (used as member_id).
     pub fn member_id(&self) -> u64 {
         self.config.id

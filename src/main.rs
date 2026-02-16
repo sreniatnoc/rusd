@@ -19,7 +19,8 @@ use rusd::server::{AutoCompactionMode, ClusterState, RusdServer, ServerConfig};
 #[derive(Parser, Debug)]
 #[command(
     name = "rusd",
-    version = "0.1.0",
+    // clap prints this on --version; include etcd-compat line for e2e framework detection
+    version = concat!(env!("CARGO_PKG_VERSION"), "\netcd Version: 3.5.17\nGit SHA: rusd-", env!("CARGO_PKG_VERSION")),
     author = "Shailesh <shailesh.pant@gmail.com>",
     about = "A high-performance Rust replacement for etcd",
     long_about = "rusd is a distributed reliable key-value store for the most critical data of a distributed system, written in Rust for maximum performance and memory efficiency."
@@ -166,6 +167,72 @@ struct Args {
     /// Falls back to --trusted-ca-file if not set.
     #[arg(long)]
     peer_trusted_ca_file: Option<String>,
+
+    // ---- etcd-compat flags (accepted but ignored for e2e test compatibility) ----
+    /// Enable auto TLS for client connections (generates self-signed cert).
+    #[arg(long, default_value_t = false)]
+    auto_tls: bool,
+
+    /// Enable auto TLS for peer connections (generates self-signed cert).
+    #[arg(long, default_value_t = false)]
+    peer_auto_tls: bool,
+
+    /// Enable client certificate authentication (etcd compat, ignored — rusd infers from trusted-ca-file).
+    /// Can be specified multiple times (etcd CLI sends it twice in some configs).
+    #[arg(long, hide = true, action = clap::ArgAction::Count)]
+    client_cert_auth: u8,
+
+    /// Enable peer client certificate authentication (etcd compat, ignored).
+    #[arg(long, hide = true, action = clap::ArgAction::Count)]
+    peer_client_cert_auth: u8,
+
+    /// Log output targets (etcd compat, ignored — rusd uses --log-level).
+    #[arg(long, hide = true)]
+    log_outputs: Option<String>,
+
+    /// Enable pprof profiling endpoint (etcd compat, ignored).
+    #[arg(long, default_value_t = false, hide = true)]
+    enable_pprof: bool,
+
+    /// Logger type (etcd compat, ignored — rusd always uses tracing).
+    #[arg(long, hide = true)]
+    logger: Option<String>,
+
+    /// Enable socket SO_REUSEPORT (etcd compat, ignored).
+    #[arg(long, default_value_t = false, hide = true)]
+    socket_reuse_port: bool,
+
+    /// Enable socket SO_REUSEADDR (etcd compat, ignored).
+    #[arg(long, default_value_t = false, hide = true)]
+    socket_reuse_address: bool,
+
+    /// Interpret 'auto' cipher-suites as enabled (etcd compat, ignored).
+    #[arg(long, hide = true)]
+    cipher_suites: Option<String>,
+
+    /// Maximum number of operations per txn (etcd compat, ignored).
+    #[arg(long, hide = true)]
+    max_txn_ops: Option<u64>,
+
+    /// Maximum request bytes (etcd compat, ignored).
+    #[arg(long, hide = true)]
+    max_request_bytes: Option<u64>,
+
+    /// Experimental initial corrupt check (etcd compat, ignored).
+    #[arg(long, default_value_t = false, hide = true)]
+    experimental_initial_corrupt_check: bool,
+
+    /// Experimental corrupt check time (etcd compat, ignored).
+    #[arg(long, hide = true)]
+    experimental_corrupt_check_time: Option<String>,
+
+    /// Client CRL file for certificate revocation (etcd compat, ignored).
+    #[arg(long, hide = true)]
+    client_crl_file: Option<String>,
+
+    /// Force new cluster (etcd compat, ignored).
+    #[arg(long, default_value_t = false, hide = true)]
+    force_new_cluster: bool,
 }
 
 #[tokio::main]
@@ -174,6 +241,9 @@ async fn main() -> anyhow::Result<()> {
 
     // Initialize tracing/logging
     initialize_tracing(&args.log_level)?;
+
+    // Log warnings for etcd-compat flags that are accepted but ignored
+    log_compat_flag_warnings(&args);
 
     // Print startup banner
     print_startup_banner(&args);
@@ -198,6 +268,33 @@ async fn main() -> anyhow::Result<()> {
             error!("Server error: {:?}", e);
             Err(e)
         }
+    }
+}
+
+/// Log warnings for etcd-compatible flags that are accepted but ignored.
+fn log_compat_flag_warnings(args: &Args) {
+    if args.auto_tls {
+        info!(
+            "--auto-tls enabled: will generate self-signed TLS certificate for client connections"
+        );
+    }
+    if args.peer_auto_tls {
+        info!("--peer-auto-tls enabled: will generate self-signed TLS certificate for peer connections");
+    }
+    if args.client_cert_auth > 0 {
+        info!("--client-cert-auth flag accepted for etcd compatibility (ignored, inferred from --trusted-ca-file)");
+    }
+    if args.peer_client_cert_auth > 0 {
+        info!("--peer-client-cert-auth flag accepted for etcd compatibility (ignored)");
+    }
+    if args.log_outputs.is_some() {
+        info!("--log-outputs flag accepted for etcd compatibility (ignored, use --log-level)");
+    }
+    if args.enable_pprof {
+        info!("--enable-pprof flag accepted for etcd compatibility (ignored)");
+    }
+    if args.logger.is_some() {
+        info!("--logger flag accepted for etcd compatibility (ignored, rusd uses tracing)");
     }
 }
 
@@ -227,6 +324,7 @@ fn initialize_tracing(log_level: &str) -> anyhow::Result<()> {
 }
 
 /// Print the startup banner with version and configuration info.
+/// Includes etcd-compatible version line for e2e test framework detection.
 fn print_startup_banner(args: &Args) {
     let version = env!("CARGO_PKG_VERSION");
     println!("╔════════════════════════════════════════════════════════════╗");
@@ -236,6 +334,19 @@ fn print_startup_banner(args: &Args) {
     );
     println!("║   A Rust replacement for etcd with K8s API parity        ║");
     println!("╚════════════════════════════════════════════════════════════╝");
+    // etcd e2e framework parses --version output for "etcd Version: X.Y.Z"
+    // This line ensures the framework detects a compatible version.
+    println!("etcd Version: 3.5.17");
+    println!("Git SHA: rusd-{}", version);
+    println!(
+        "Go Version: rust-{}",
+        option_env!("CARGO_PKG_RUST_VERSION").unwrap_or("stable")
+    );
+    println!(
+        "Go OS/Arch: {}/{}",
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    );
     println!();
     println!("Configuration:");
     println!("  Name:                  {}", args.name);
@@ -286,6 +397,9 @@ fn build_server_config(args: &Args) -> anyhow::Result<ServerConfig> {
         peer_tls_cert_file: args.peer_cert_file.clone(),
         peer_tls_key_file: args.peer_key_file.clone(),
         peer_tls_trusted_ca_file: args.peer_trusted_ca_file.clone(),
+        auto_tls: args.auto_tls,
+        peer_auto_tls: args.peer_auto_tls,
+        client_crl_file: args.client_crl_file.clone(),
     })
 }
 

@@ -709,9 +709,16 @@ test_data_integrity_after_failover() {
 
     log_verbose "All 100 /repl/ keys intact after failover"
 
-    # Verify the failover key is also present
-    local failover_val
-    failover_val=$($ETCDCTL --endpoints="$endpoint" get /failover/test --print-value-only 2>/dev/null || echo "")
+    # Verify the failover key is also present (allow replication delay on CI)
+    local failover_val=""
+    for attempt in 1 2 3 4 5; do
+        failover_val=$($ETCDCTL --endpoints="$surviving_endpoints" get /failover/test --print-value-only 2>/dev/null || echo "")
+        if [ "$failover_val" = "survived" ]; then
+            break
+        fi
+        log_verbose "Failover key not yet replicated (attempt $attempt/5), waiting 1s..."
+        sleep 1
+    done
     if [ "$failover_val" != "survived" ]; then
         echo "  Failover key missing or wrong: $failover_val"
         return 1

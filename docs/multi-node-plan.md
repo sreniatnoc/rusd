@@ -1,5 +1,7 @@
 # rusd Multi-Node Execution and Validation Plan
 
+> **Note:** This document was written as a pre-implementation feasibility analysis before multi-node Raft was implemented. As of **v0.2.0**, all five phases described in the implementation roadmap are complete. Multi-node Raft is fully functional with leader election, log replication, snapshot transfer, leader forwarding, dynamic membership, and chaos testing. See [Getting Started](getting-started) for multi-node usage and [Architecture](architecture) for implementation details.
+
 ## Table of Contents
 1. [Feasibility Analysis: Current Raft Implementation](#1-feasibility-analysis)
 2. [Multi-Node Raft Validation Plan](#2-multi-node-raft-validation-plan)

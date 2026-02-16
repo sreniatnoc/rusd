@@ -66,6 +66,40 @@ etcdctl lease revoke $LEASE
 etcdctl member list
 etcdctl endpoint status
 etcdctl endpoint health
+
+# Snapshot
+etcdctl snapshot save backup.db
+```
+
+## Run with Auto-TLS
+
+rusd can generate self-signed TLS certificates at startup, matching etcd's `--auto-tls` behavior:
+
+```bash
+./target/release/rusd \
+  --name node1 \
+  --listen-client-urls https://127.0.0.1:2379 \
+  --auto-tls
+```
+
+Connect with etcdctl using `--insecure-transport=false --insecure-skip-tls-verify`:
+
+```bash
+etcdctl --endpoints=https://127.0.0.1:2379 \
+  --insecure-transport=false \
+  --insecure-skip-tls-verify \
+  endpoint health
+```
+
+## Run with TLS (Manual Certificates)
+
+```bash
+./target/release/rusd --name node1 \
+  --listen-client-urls https://127.0.0.1:2379 \
+  --cert-file certs/server.crt \
+  --key-file certs/server.key \
+  --trusted-ca-file certs/ca.crt \
+  --client-cert-auth
 ```
 
 ## Run as Kubernetes Backend (Kind)
@@ -131,21 +165,21 @@ etcdctl --endpoints=http://127.0.0.1:2379,http://127.0.0.1:2479,http://127.0.0.1
 etcdctl member list
 ```
 
-## Run with TLS
+**Leader forwarding:** In multi-node clusters, write requests sent to followers are automatically forwarded to the current leader. You can send writes to any node endpoint.
+
+## Run etcd's E2E Tests Against rusd
+
+See [etcd E2E Tests](etcd-e2e-tests) for the full guide. Quick start:
 
 ```bash
-./target/release/rusd --name node1 \
-  --listen-client-urls https://127.0.0.1:2379 \
-  --cert-file certs/server.crt \
-  --key-file certs/server.key \
-  --trusted-ca-file certs/ca.crt \
-  --client-cert-auth
+# Run the compatibility test script
+./scripts/etcd-e2e-compat.sh --tier 2
 ```
 
 ## Run Tests
 
 ```bash
-# All tests (48 unit + 15 integration)
+# All tests (44 unit + 4 main + 15 integration)
 cargo test
 
 # Unit tests only
@@ -162,6 +196,9 @@ cargo test tls
 
 # Chaos tests (leader kill + recovery, data integrity under churn)
 ./scripts/chaos-test.sh
+
+# etcd e2e compatibility tests
+./scripts/etcd-e2e-compat.sh
 
 # With verbose output
 RUST_LOG=rusd=debug cargo test -- --nocapture

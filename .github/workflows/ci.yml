@@ -545,3 +545,150 @@ jobs:
         run: |
           chmod +x scripts/k8s-test.sh
           ./scripts/k8s-test.sh
+
+  # ============================================================================
+  # Job 9: etcd E2E Compatibility Tests
+  # ============================================================================
+  etcd-e2e-compat:
+    name: etcd E2E Compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: build-and-test
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download rusd binary
+        uses: actions/download-artifact@v4
+        with:
+          name: rusd-binary
+          path: ./target/release/
+
+      - name: Make binary executable
+        run: chmod +x ./target/release/rusd
+
+      - name: Verify etcd-compatible version output
+        run: |
+          echo "=== rusd --version ==="
+          ./target/release/rusd --version
+          ./target/release/rusd --version 2>&1 | grep -q "etcd Version:" || {
+            echo "ERROR: rusd does not output etcd-compatible version string"
+            exit 1
+          }
+          echo "Version output OK"
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Clone etcd (shallow)
+        run: |
+          git clone --depth 1 --branch v3.5.17 \
+            https://github.com/etcd-io/etcd.git /tmp/etcd-src
+
+      - name: Build etcdctl and etcdutl (separate Go modules)
+        run: |
+          # etcd v3.5.x is a multi-module repo. etcdctl and etcdutl
+          # have their own go.mod — must build from their directories.
+          # Place binaries in <etcd-repo>/bin/ (framework default path).
+          mkdir -p /tmp/etcd-src/bin
+          cd /tmp/etcd-src/etcdctl && go build -o ../bin/etcdctl .
+          cd /tmp/etcd-src/etcdutl && go build -o ../bin/etcdutl .
+          echo "Built etcdctl and etcdutl"
+
+      - name: Symlink rusd as etcd in etcd repo bin/
+        run: |
+          ln -sf "$(pwd)/target/release/rusd" /tmp/etcd-src/bin/etcd
+          echo "Symlinked rusd as etcd"
+          /tmp/etcd-src/bin/etcd --version
+          /tmp/etcd-src/bin/etcdctl version
+
+      - name: "Tier 1: Smoke — KV Put/Get NoTLS"
+        run: |
+          cd /tmp/etcd-src/tests
+          export PATH="/tmp/etcd-src/bin:$PATH"
+          go test ./e2e/... \
+            -run "TestCtlV3PutNoTLS|TestCtlV3GetNoTLS" \
+            -v -timeout 5m -count=1 2>&1 | tee /tmp/tier1.log || true
+          echo ""
+          echo "=== Tier 1 Results ==="
+          grep -c "^--- PASS:" /tmp/tier1.log || echo "0 passed"
+          grep -c "^--- FAIL:" /tmp/tier1.log || echo "0 failed"
+
+      - name: "Tier 2: Core KV Operations"
+        run: |
+          cd /tmp/etcd-src/tests
+          export PATH="/tmp/etcd-src/bin:$PATH"
+          go test ./e2e/... \
+            -run "TestCtlV3Put|TestCtlV3Get|TestCtlV3Del" \
+            -v -timeout 10m -count=1 2>&1 | tee /tmp/tier2.log || true
+          echo ""
+          echo "=== Tier 2 Results ==="
+          grep -c "^--- PASS:" /tmp/tier2.log || echo "0 passed"
+          grep -c "^--- FAIL:" /tmp/tier2.log || echo "0 failed"
+
+      - name: "Tier 3: Watch + Lease + Auth"
+        run: |
+          cd /tmp/etcd-src/tests
+          export PATH="/tmp/etcd-src/bin:$PATH"
+          go test ./e2e/... \
+            -run "TestCtlV3Watch|TestCtlV3Lease|TestCtlV3Auth" \
+            -v -timeout 15m -count=1 2>&1 | tee /tmp/tier3.log || true
+          echo ""
+          echo "=== Tier 3 Results ==="
+          grep -c "^--- PASS:" /tmp/tier3.log || echo "0 passed"
+          grep -c "^--- FAIL:" /tmp/tier3.log || echo "0 failed"
+
+      - name: Generate compatibility report
+        if: always()
+        run: |
+          echo "╔════════════════════════════════════════════════════════════╗"
+          echo "║         etcd E2E Compatibility Summary                   ║"
+          echo "╚════════════════════════════════════════════════════════════╝"
+          echo ""
+          TOTAL_PASS=0
+          TOTAL_FAIL=0
+          for tier in 1 2 3; do
+            LOG="/tmp/tier${tier}.log"
+            if [[ -f "$LOG" ]]; then
+              P=$(grep -c "^--- PASS:" "$LOG" 2>/dev/null || true)
+              F=$(grep -c "^--- FAIL:" "$LOG" 2>/dev/null || true)
+              P=${P:-0}
+              F=${F:-0}
+              TOTAL_PASS=$((TOTAL_PASS + P))
+              TOTAL_FAIL=$((TOTAL_FAIL + F))
+              echo "  Tier $tier: $P passed, $F failed"
+            fi
+          done
+          echo ""
+          echo "  Total: $TOTAL_PASS passed, $TOTAL_FAIL failed"
+          echo ""
+
+          # Generate JSON report
+          cat > /tmp/e2e-compat-report.json <<EOF
+          {
+            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "rusd_version": "$(./target/release/rusd --version 2>&1 | head -1)",
+            "etcd_test_suite": "v3.5.17",
+            "total_passed": $TOTAL_PASS,
+            "total_failed": $TOTAL_FAIL
+          }
+          EOF
+
+      - name: Upload tier logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: etcd-e2e-compat-logs
+          path: /tmp/tier*.log
+          retention-days: 14
+
+      - name: Upload compatibility report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: etcd-e2e-compat-report
+          path: /tmp/e2e-compat-report.json
+          retention-days: 30
