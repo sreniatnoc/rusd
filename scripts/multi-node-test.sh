@@ -805,7 +805,7 @@ test_concurrent_writes() {
         wait "$pid" 2>/dev/null || true
     done
 
-    sleep 5  # Wait for replication
+    sleep 3  # Initial wait for replication
 
     # Count keys on leader first to establish baseline
     local leader_count
@@ -821,23 +821,51 @@ test_concurrent_writes() {
     # Allow 5% replication lag (recently-restarted nodes may trail slightly)
     local min_replicated=$(( leader_count * 95 / 100 ))
 
-    # Verify all healthy nodes replicated the leader's data
-    for port in "${CLIENT_PORTS[@]}"; do
-        local ep="http://127.0.0.1:${port}"
-        local pid_for_port
-        pid_for_port=$(get_pid_for_port "$port")
-        if [ -n "$pid_for_port" ] && ! kill -0 "$pid_for_port" 2>/dev/null; then
-            continue  # Skip dead nodes
-        fi
+    # Verify all healthy nodes replicated the leader's data (with retry for CI runners)
+    local all_replicated=false
+    for attempt in 1 2 3 4 5; do
+        all_replicated=true
+        for port in "${CLIENT_PORTS[@]}"; do
+            local ep="http://127.0.0.1:${port}"
+            local pid_for_port
+            pid_for_port=$(get_pid_for_port "$port")
+            if [ -n "$pid_for_port" ] && ! kill -0 "$pid_for_port" 2>/dev/null; then
+                continue  # Skip dead nodes
+            fi
 
-        local count
-        count=$($ETCDCTL --endpoints="$ep" get /stress/ --prefix --keys-only 2>/dev/null | grep -c '/stress/' || true)
+            local count
+            count=$($ETCDCTL --endpoints="$ep" get /stress/ --prefix --keys-only 2>/dev/null | grep -c '/stress/' || true)
 
-        if [ "$count" -lt "$min_replicated" ]; then
-            echo "  Node on port $port has $count/$leader_count stress test keys (below 95% threshold: $min_replicated)"
-            return 1
+            if [ "$count" -lt "$min_replicated" ]; then
+                all_replicated=false
+                log_verbose "Node on port $port has $count/$leader_count keys (attempt $attempt/5)"
+                break
+            fi
+        done
+
+        if [ "$all_replicated" = true ]; then
+            break
         fi
+        sleep 2
     done
+
+    if [ "$all_replicated" != true ]; then
+        # Final check with detailed output
+        for port in "${CLIENT_PORTS[@]}"; do
+            local ep="http://127.0.0.1:${port}"
+            local pid_for_port
+            pid_for_port=$(get_pid_for_port "$port")
+            if [ -n "$pid_for_port" ] && ! kill -0 "$pid_for_port" 2>/dev/null; then
+                continue
+            fi
+            local count
+            count=$($ETCDCTL --endpoints="$ep" get /stress/ --prefix --keys-only 2>/dev/null | grep -c '/stress/' || true)
+            if [ "$count" -lt "$min_replicated" ]; then
+                echo "  Node on port $port has $count/$leader_count stress test keys (below 95% threshold: $min_replicated)"
+                return 1
+            fi
+        done
+    fi
 
     log_verbose "Stress test: $leader_count keys on leader, all nodes >= $min_replicated (95%)"
     return 0
