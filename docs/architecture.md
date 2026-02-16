@@ -120,11 +120,40 @@ Cluster membership changes (add, remove, update, promote) go through Raft consen
 
 This ensures consistent cluster membership across all nodes. Learner nodes can be added first and promoted to voting members once they catch up.
 
+## Leader Forwarding
+
+In multi-node clusters, followers transparently proxy write requests to the current leader:
+
+1. Client sends a write (Put, DeleteRange, Txn, Compact) to any node
+2. If the node is not the leader, it looks up the leader's client URL from its peer mapping
+3. A cached gRPC client forwards the request to the leader
+4. The leader executes the write through Raft consensus
+5. The leader's response is returned to the client through the follower
+
+Leader client URLs are derived at startup from the `--initial-cluster` configuration. The mapping uses the convention `client_port = peer_port - 1` (matching etcd's default behavior).
+
+Reads are served locally from any node without forwarding.
+
+## Auto-TLS
+
+When `--auto-tls` is set and no explicit certificate files are provided, rusd generates self-signed TLS certificates at startup using the `rcgen` crate:
+
+1. Generates an X.509 certificate with Subject Alternative Names (SANs):
+   - The node's `--name` value
+   - `localhost`
+   - `127.0.0.1`
+   - `0.0.0.0`
+2. Creates a matching private key
+3. Configures the gRPC server with the generated cert/key pair
+
+For peer auto-TLS (`--peer-auto-tls`), rusd uses plaintext transport between peers. This is because tonic/rustls does not support `InsecureSkipVerify` (Go's crypto/tls feature), so self-signed peer certificates cannot be verified. This matches the security model: auto-TLS is intended for development and testing, not production.
+
 ## TLS/mTLS
 
 rusd supports TLS encryption for both client-to-server and peer-to-peer connections:
 
 - **Client TLS**: `--cert-file`, `--key-file`, `--trusted-ca-file` flags
 - **Peer TLS**: `--peer-cert-file`, `--peer-key-file`, `--peer-trusted-ca-file` flags
+- **Auto-TLS**: `--auto-tls` generates self-signed certificates at startup
 - **mTLS**: When `--client-cert-auth` or `--peer-client-cert-auth` is set, clients must present valid certificates
 - Certificate loading uses `rustls` with no OpenSSL dependency

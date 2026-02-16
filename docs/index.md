@@ -25,24 +25,43 @@ rusd is a distributed key-value store that serves as a drop-in replacement for e
 rusd is built on four pillars:
 
 1. **MVCC Store** with dual-write to `kv` (latest values) and `kv_rev` (full revision history)
-2. **Raft Consensus** with PreVote, real gRPC peer transport, snapshot transfer, and dynamic membership
+2. **Raft Consensus** with PreVote, real gRPC peer transport, snapshot transfer, leader forwarding, and dynamic membership
 3. **Watch Hub** using DashMap + crossbeam channels for real-time event streaming
 4. **sled Backend** providing lock-free B+ tree storage
 
 ## Pages
 
 - [Architecture](architecture) - Detailed system architecture with diagrams
-- [Benchmarks](benchmarks) - Head-to-head benchmark results vs etcd v3.6.7
 - [Getting Started](getting-started) - Build, run, and test rusd
+- [Benchmarks](benchmarks) - Methodology for head-to-head benchmarks vs etcd v3.6.7
+- [Benchmark Results](benchmark-results) - Detailed performance comparison data
+- [API Compatibility](api-compatibility) - Full 24/24 API mapping and etcd e2e test results
+- [etcd E2E Tests](etcd-e2e-tests) - Running etcd's own test suite against rusd
+- [CLI Reference](cli-reference) - All command-line flags
 
-## Status
+## Status (v0.2.0)
 
+- **24/24 etcd API compatibility** — KV, Watch, Lease, Auth, Cluster, Maintenance (incl. Snapshot)
+- **24/26 etcd e2e tests pass** (Tier 2 Core KV, 92.3%)
 - 34/34 Kubernetes compliance tests pass (Kind v1.35)
-- 48 unit tests + 15 integration tests + 7 multi-node Raft tests + 8 TLS tests
-- Full KV, Watch, Lease, Auth, Cluster, Maintenance APIs
-- Multi-node Raft with leader election, log replication, and snapshot transfer
-- TLS/mTLS support for both client and peer connections
+- Multi-node Raft with leader election, log replication, leader forwarding, and snapshot transfer
+- TLS/mTLS and Auto-TLS certificate generation
 - Dynamic cluster membership (add/remove/promote members)
-- Snapshot streaming and restore via Maintenance API
-- Defragmentation and hash verification
 - Chaos testing: leader kill + recovery, data integrity under node churn
+- Defragmentation and hash verification
+
+### Test Matrix
+
+| Category | Count |
+|----------|-------|
+| Unit tests | 44 |
+| Main tests | 4 |
+| Integration tests | 15 |
+| Multi-node Raft tests | 7 |
+| TLS tests | 8 |
+| Chaos tests | 11 |
+| K8s compliance tests | 34 |
+| Criterion benchmarks | 32 |
+| **Total** | **155** |
+
+All tests pass in CI across 9 jobs.

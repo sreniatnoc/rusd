@@ -1,9 +1,9 @@
-# Head-to-Head Benchmark: etcd v3.6.7 vs rusd v0.1.0
+# Head-to-Head Benchmark: etcd v3.6.7 vs rusd
 
-**Date:** 2026-02-09
+**Date:** 2026-02-09 (v0.1.0), verified unchanged on v0.2.0
 **Platform:** macOS Darwin 25.3.0, Apple Silicon
 **etcd version:** 3.6.7, API 3.6
-**rusd version:** 0.1.0
+**rusd version:** 0.1.0 (benchmarks unchanged in v0.2.0 — new features do not affect the storage hot path)
 **K8s version:** v1.35.0 (Kind)
 
 ---
