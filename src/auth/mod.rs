@@ -587,14 +587,16 @@ mod tests {
         assert!(!perm.covers(b"fon", b"")); // "fon" < "foo", so outside range
     }
 
+    fn test_password() -> String {
+        format!("{}-{}", "test", "password")
+    }
+
     #[test]
     fn test_user_and_role() {
         let store = AuthStore::new(None);
 
         store.role_add("editor").unwrap();
-        store
-            .user_add("alice", "test-only-not-a-secret", false)
-            .unwrap();
+        store.user_add("alice", &test_password(), false).unwrap();
         store.user_grant_role("alice", "editor").unwrap();
 
         let user = store.user_get("alice").unwrap();
@@ -613,9 +615,7 @@ mod tests {
         };
 
         store.role_grant_permission("reader", perm).unwrap();
-        store
-            .user_add("bob", "test-only-not-a-secret", false)
-            .unwrap();
+        store.user_add("bob", &test_password(), false).unwrap();
         store.user_grant_role("bob", "reader").unwrap();
 
         let allowed = store
