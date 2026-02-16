@@ -169,7 +169,6 @@ struct Args {
     peer_trusted_ca_file: Option<String>,
 
     // ---- etcd-compat flags (accepted but ignored for e2e test compatibility) ----
-
     /// Enable auto TLS for client connections (generates self-signed cert).
     #[arg(long, default_value_t = false)]
     auto_tls: bool,
@@ -275,7 +274,9 @@ async fn main() -> anyhow::Result<()> {
 /// Log warnings for etcd-compatible flags that are accepted but ignored.
 fn log_compat_flag_warnings(args: &Args) {
     if args.auto_tls {
-        info!("--auto-tls enabled: will generate self-signed TLS certificate for client connections");
+        info!(
+            "--auto-tls enabled: will generate self-signed TLS certificate for client connections"
+        );
     }
     if args.peer_auto_tls {
         info!("--peer-auto-tls enabled: will generate self-signed TLS certificate for peer connections");
@@ -337,8 +338,15 @@ fn print_startup_banner(args: &Args) {
     // This line ensures the framework detects a compatible version.
     println!("etcd Version: 3.5.17");
     println!("Git SHA: rusd-{}", version);
-    println!("Go Version: rust-{}", option_env!("CARGO_PKG_RUST_VERSION").unwrap_or("stable"));
-    println!("Go OS/Arch: {}/{}", std::env::consts::OS, std::env::consts::ARCH);
+    println!(
+        "Go Version: rust-{}",
+        option_env!("CARGO_PKG_RUST_VERSION").unwrap_or("stable")
+    );
+    println!(
+        "Go OS/Arch: {}/{}",
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    );
     println!();
     println!("Configuration:");
     println!("  Name:                  {}", args.name);

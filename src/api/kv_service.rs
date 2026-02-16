@@ -51,9 +51,11 @@ impl KvService {
 
     /// Get or create a gRPC client for forwarding to the leader.
     async fn get_leader_client(&self) -> Result<KvClient<tonic::transport::Channel>, Status> {
-        let leader_id = self.raft.get_state().leader_id().ok_or_else(|| {
-            Status::new(Code::Unavailable, "no leader elected")
-        })?;
+        let leader_id = self
+            .raft
+            .get_state()
+            .leader_id()
+            .ok_or_else(|| Status::new(Code::Unavailable, "no leader elected"))?;
 
         // Check cache
         {
@@ -77,10 +79,12 @@ impl KvService {
             .timeout(Duration::from_secs(5))
             .connect_timeout(Duration::from_secs(3));
 
-        let channel = endpoint
-            .connect()
-            .await
-            .map_err(|e| Status::new(Code::Unavailable, format!("cannot connect to leader: {}", e)))?;
+        let channel = endpoint.connect().await.map_err(|e| {
+            Status::new(
+                Code::Unavailable,
+                format!("cannot connect to leader: {}", e),
+            )
+        })?;
 
         let client = KvClient::new(channel);
 
@@ -338,13 +342,10 @@ impl Kv for KvService {
         let effective_value = if req.ignore_value {
             let mut end = req.key.clone();
             end.push(0);
-            match self.store.range(
-                &req.key,
-                &end,
-                self.store.current_revision(),
-                1,
-                false,
-            ) {
+            match self
+                .store
+                .range(&req.key, &end, self.store.current_revision(), 1, false)
+            {
                 Ok(result) => result
                     .kvs
                     .into_iter()
@@ -361,13 +362,10 @@ impl Kv for KvService {
         let effective_lease = if req.ignore_lease {
             let mut end = req.key.clone();
             end.push(0);
-            match self.store.range(
-                &req.key,
-                &end,
-                self.store.current_revision(),
-                1,
-                false,
-            ) {
+            match self
+                .store
+                .range(&req.key, &end, self.store.current_revision(), 1, false)
+            {
                 Ok(result) => result
                     .kvs
                     .into_iter()

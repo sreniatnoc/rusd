@@ -1082,7 +1082,9 @@ fn derive_client_url_from_peer(peer_url: &str) -> String {
     }
 
     // Fallback: replace :2380 with :2379
-    peer_url.replace(":2380", ":2379").replace("https://", "http://")
+    peer_url
+        .replace(":2380", ":2379")
+        .replace("https://", "http://")
 }
 
 #[cfg(test)]
