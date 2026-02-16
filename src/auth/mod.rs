@@ -198,7 +198,12 @@ pub struct AuthStore {
 impl AuthStore {
     /// Creates a new AuthStore.
     pub fn new(jwt_secret: Option<String>) -> Self {
-        let secret = jwt_secret.unwrap_or_else(|| "default-secret-change-me".to_string());
+        let secret = jwt_secret.unwrap_or_else(|| {
+            use base64::Engine;
+            use rand::Rng;
+            let bytes: [u8; 32] = rand::thread_rng().gen();
+            base64::engine::general_purpose::STANDARD.encode(bytes)
+        });
 
         let mut store = AuthStore {
             users: RwLock::new(HashMap::new()),
@@ -587,7 +592,9 @@ mod tests {
         let store = AuthStore::new(None);
 
         store.role_add("editor").unwrap();
-        store.user_add("alice", "password123", false).unwrap();
+        store
+            .user_add("alice", "test-only-not-a-secret", false)
+            .unwrap();
         store.user_grant_role("alice", "editor").unwrap();
 
         let user = store.user_get("alice").unwrap();
@@ -606,7 +613,9 @@ mod tests {
         };
 
         store.role_grant_permission("reader", perm).unwrap();
-        store.user_add("bob", "pass123", false).unwrap();
+        store
+            .user_add("bob", "test-only-not-a-secret", false)
+            .unwrap();
         store.user_grant_role("bob", "reader").unwrap();
 
         let allowed = store
