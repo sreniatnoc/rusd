@@ -52,15 +52,15 @@ The script runs etcd v3.5.17's tests in progressive tiers:
 | Tier | Passed | Failed | Rate |
 |------|--------|--------|------|
 | 1 — Smoke | 2/2 | 0 | **100%** |
-| 2 — Core KV | 24/26 | 2 | **92.3%** |
+| 2 — Core KV | 26/26 | 0 | **100%** |
 
-### Tier 2 Remaining Failures
+### Tier 2 — All Tests Passing
 
-**TestCtlV3GetFormat (protobuf binary):** The test compares raw protobuf bytes that encode `cluster_id` and `member_id`. rusd generates different IDs than etcd (different ID generation algorithms), so the binary output never matches. This is not a correctness issue — the data is semantically correct.
+All 26 Tier 2 Core KV tests now pass. The two previously failing tests were fixed in v0.2.0+:
 
-**TestCtlV3GetRevokedCRL:** Requires Certificate Revocation List (CRL) enforcement in the TLS handshake. tonic's `ServerTlsConfig` does not expose CRL checking; fixing this requires building a custom `rustls::ServerConfig` with a CRL verifier.
+**TestCtlV3GetFormat:** Fixed by implementing SHA-1 based ID generation matching etcd's algorithm, plus returning non-zero `raft_term` for single-node clusters. The protobuf binary output now matches etcd's expected bytes exactly.
 
-Neither failure affects Kubernetes workloads.
+**TestCtlV3GetRevokedCRL:** Fixed by adding DER-format CRL file support via a custom `rustls::ServerConfig` with CRL verification, bypassing tonic's `ServerTlsConfig` limitation.
 
 ## What the Script Does
 

@@ -117,6 +117,7 @@ impl RaftNode {
 
         // Single-node cluster: auto-elect as leader immediately
         if config.peers.is_empty() {
+            state.set_term(1); // Must be non-zero like etcd (election increments term)
             state.become_leader(config.id, &[], log.last_index());
         }
 
@@ -897,11 +898,10 @@ impl RaftNode {
         self.config.id
     }
 
-    /// Get the cluster ID. In a real implementation this would be stored
-    /// in the cluster state. For now we derive it from config.
+    /// Get the cluster ID. Computed from sorted member IDs using SHA-1,
+    /// matching etcd v3.5.x's algorithm.
     pub fn cluster_id(&self) -> u64 {
-        // Use a hash of the node id as a placeholder cluster id
-        self.config.id.wrapping_mul(0x517cc1b727220a95)
+        self.config.cluster_id
     }
 
     /// Get the current Raft term.

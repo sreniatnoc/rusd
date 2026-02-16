@@ -12,9 +12,12 @@
 
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tonic::transport::{Identity, Server, ServerTlsConfig};
@@ -37,6 +40,129 @@ fn generate_self_signed_cert(name: &str) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
     let key_pem = certified_key.signing_key.serialize_pem();
 
     Ok((cert_pem.into_bytes(), key_pem.into_bytes()))
+}
+
+/// Wrapper around a TLS stream that implements tonic's `Connected` trait.
+/// Used for custom TLS configurations (e.g., CRL enforcement) that bypass
+/// tonic's built-in `ServerTlsConfig`.
+struct CrlTlsStream {
+    inner: tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
+}
+
+impl AsyncRead for CrlTlsStream {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for CrlTlsStream {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+impl tonic::transport::server::Connected for CrlTlsStream {
+    type ConnectInfo = tonic::transport::server::TcpConnectInfo;
+
+    fn connect_info(&self) -> Self::ConnectInfo {
+        // Delegate to the underlying TcpStream's Connected impl
+        self.inner.get_ref().0.connect_info()
+    }
+}
+
+/// Build a TLS acceptor with CRL (Certificate Revocation List) enforcement.
+/// Uses rustls's `WebPkiClientVerifier` with CRL support, bypassing tonic's
+/// `ServerTlsConfig` which doesn't expose CRL configuration.
+fn build_crl_tls_acceptor(
+    cert_file: &str,
+    key_file: &str,
+    ca_file: &str,
+    crl_file: &str,
+) -> anyhow::Result<tokio_rustls::TlsAcceptor> {
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+    use std::io::BufReader;
+
+    // Read server certificate chain
+    let cert_pem = std::fs::read(cert_file)
+        .map_err(|e| anyhow::anyhow!("Failed to read cert file {}: {}", cert_file, e))?;
+    let certs: Vec<CertificateDer<'static>> =
+        rustls_pemfile::certs(&mut BufReader::new(cert_pem.as_slice()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| anyhow::anyhow!("Failed to parse cert PEM: {}", e))?;
+
+    // Read private key
+    let key_pem = std::fs::read(key_file)
+        .map_err(|e| anyhow::anyhow!("Failed to read key file {}: {}", key_file, e))?;
+    let private_key: PrivateKeyDer<'static> =
+        rustls_pemfile::private_key(&mut BufReader::new(key_pem.as_slice()))
+            .map_err(|e| anyhow::anyhow!("Failed to parse key PEM: {}", e))?
+            .ok_or_else(|| anyhow::anyhow!("No private key found in {}", key_file))?;
+
+    // Read CA certificate(s) for client verification
+    let ca_pem = std::fs::read(ca_file)
+        .map_err(|e| anyhow::anyhow!("Failed to read CA file {}: {}", ca_file, e))?;
+    let ca_certs: Vec<CertificateDer<'static>> =
+        rustls_pemfile::certs(&mut BufReader::new(ca_pem.as_slice()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| anyhow::anyhow!("Failed to parse CA PEM: {}", e))?;
+
+    let mut root_store = rustls::RootCertStore::empty();
+    for ca_cert in ca_certs {
+        root_store
+            .add(ca_cert)
+            .map_err(|e| anyhow::anyhow!("Failed to add CA cert to root store: {}", e))?;
+    }
+
+    // Read CRL(s) — supports both PEM and DER formats
+    let crl_bytes = std::fs::read(crl_file)
+        .map_err(|e| anyhow::anyhow!("Failed to read CRL file {}: {}", crl_file, e))?;
+    let mut crls: Vec<rustls::pki_types::CertificateRevocationListDer<'static>> =
+        rustls_pemfile::crls(&mut BufReader::new(crl_bytes.as_slice()))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap_or_default();
+    if crls.is_empty() {
+        // Not PEM — treat the whole file as a single DER-encoded CRL
+        crls.push(rustls::pki_types::CertificateRevocationListDer::from(crl_bytes));
+    }
+
+    info!(
+        crl_file = crl_file,
+        crl_count = crls.len(),
+        "Loading CRL for client certificate revocation checking"
+    );
+
+    // Build client verifier with CRL enforcement
+    let verifier = rustls::server::WebPkiClientVerifier::builder(Arc::new(root_store))
+        .with_crls(crls)
+        .build()
+        .map_err(|e| anyhow::anyhow!("Failed to build CRL verifier: {}", e))?;
+
+    // Build server config with CRL-aware client verification
+    let server_config = rustls::ServerConfig::builder()
+        .with_client_cert_verifier(verifier)
+        .with_single_cert(certs, private_key)
+        .map_err(|e| anyhow::anyhow!("Failed to build TLS config with CRL: {}", e))?;
+
+    Ok(tokio_rustls::TlsAcceptor::from(Arc::new(server_config)))
 }
 
 use crate::api::auth_service::AuthService;
@@ -260,23 +386,28 @@ impl RusdServer {
             "Initializing rusd server"
         );
 
-        // Generate a deterministic member ID from name + cluster token.
-        // This ensures the same node always gets the same ID across restarts.
-        let member_id = {
-            use std::collections::hash_map::DefaultHasher;
-            use std::hash::{Hash, Hasher};
-            let mut hasher = DefaultHasher::new();
-            config.name.hash(&mut hasher);
-            config.initial_cluster_token.hash(&mut hasher);
-            hasher.finish()
-        };
-        let cluster_id = {
-            use std::collections::hash_map::DefaultHasher;
-            use std::hash::{Hash, Hasher};
-            let mut hasher = DefaultHasher::new();
-            config.initial_cluster_token.hash(&mut hasher);
-            hasher.finish()
-        };
+        // Generate deterministic member and cluster IDs matching etcd v3.5.x's algorithm.
+        // member_id = SHA-1(sorted_peer_urls + cluster_token) → first 8 bytes big-endian u64
+        // cluster_id = SHA-1(sorted_member_ids) → first 8 bytes big-endian u64
+        let local_peer_urls =
+            extract_member_peer_urls(&config.initial_cluster, &config.name);
+        let member_id = compute_member_id(&local_peer_urls, &config.initial_cluster_token);
+
+        // Compute all member IDs for the initial cluster to derive cluster_id
+        let all_member_ids: Vec<u64> = config
+            .initial_cluster
+            .split(',')
+            .filter_map(|entry| {
+                let parts: Vec<&str> = entry.trim().split('=').collect();
+                if parts.len() == 2 {
+                    let peer_urls = vec![parts[1].trim().to_string()];
+                    Some(compute_member_id(&peer_urls, &config.initial_cluster_token))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let cluster_id = compute_cluster_id(&all_member_ids);
 
         // 1. Initialize backend storage (sled-based)
         let backend_config = BackendConfig {
@@ -373,6 +504,7 @@ impl RusdServer {
 
         let raft_config = RaftConfig {
             id: member_id,
+            cluster_id,
             election_timeout_min: Duration::from_millis(config.election_timeout_ms),
             election_timeout_max: Duration::from_millis(config.election_timeout_ms * 2),
             heartbeat_interval: Duration::from_millis(config.heartbeat_interval_ms),
@@ -410,7 +542,7 @@ impl RusdServer {
         // 4. Initialize Cluster manager
         let cluster_mgr = ClusterManager::new(cluster_id, member_id)
             .map_err(|e| anyhow::anyhow!("Failed to initialize cluster manager: {}", e))?;
-        register_initial_members(&cluster_mgr, &config.initial_cluster, &config.name)?;
+        register_initial_members(&cluster_mgr, &config.initial_cluster, &config.initial_cluster_token)?;
         info!(
             initial_cluster = %config.initial_cluster,
             "Cluster configuration parsed"
@@ -576,8 +708,18 @@ impl RusdServer {
         ));
         let auth_service = AuthService::new(auth_mgr_for_service);
 
-        // Configure client TLS: auto-TLS generates self-signed certs, otherwise use provided files
-        let client_tls = if self.config.auto_tls && self.config.tls_cert_file.is_none() {
+        // Check if CRL enforcement is needed (requires cert + key + CA + CRL files)
+        let use_crl = self.config.client_crl_file.is_some()
+            && self.config.tls_cert_file.is_some()
+            && self.config.tls_key_file.is_some()
+            && self.config.tls_trusted_ca_file.is_some();
+
+        // Configure client TLS: auto-TLS generates self-signed certs, otherwise use provided files.
+        // CRL path uses a custom rustls config (tonic's ServerTlsConfig doesn't support CRL).
+        let client_tls = if use_crl {
+            // CRL path: skip tonic's TLS, we'll use custom TLS acceptor below
+            None
+        } else if self.config.auto_tls && self.config.tls_cert_file.is_none() {
             let (cert_pem, key_pem) = generate_self_signed_cert(&self.config.name)
                 .map_err(|e| anyhow::anyhow!("Failed to generate auto-TLS cert: {}", e))?;
             info!("Auto-TLS: generated self-signed certificate for client connections");
@@ -597,7 +739,7 @@ impl RusdServer {
             builder = builder.tls_config(tls)?;
             info!("Client gRPC server TLS enabled");
         }
-        let server = builder
+        let router = builder
             .http2_keepalive_interval(Some(Duration::from_secs(10)))
             .http2_keepalive_timeout(Some(Duration::from_secs(20)))
             .initial_connection_window_size(Some(1024 * 1024)) // 1MB
@@ -607,8 +749,7 @@ impl RusdServer {
             .add_service(LeaseServer::new(lease_service))
             .add_service(ClusterServer::new(cluster_service))
             .add_service(MaintenanceServer::new(maintenance_service))
-            .add_service(AuthServer::new(auth_service))
-            .serve_with_shutdown(addr, shutdown);
+            .add_service(AuthServer::new(auth_service));
 
         info!("rusd server listening on {}", addr);
         info!("Data directory: {}", self.config.data_dir.display());
@@ -618,9 +759,8 @@ impl RusdServer {
             self.config.advertise_client_urls.join(", ")
         );
 
-        // For multi-node clusters, wait for a leader to be elected before declaring ready.
-        // The etcd e2e framework expects the cluster to be operational once it sees this line.
-        // Single-node clusters are always the leader immediately after Raft starts.
+        // Print readiness line (etcd e2e framework blocks on this).
+        // For multi-node clusters, wait for leader election first.
         let is_multi_node = self.config.initial_cluster.matches('=').count() > 1;
         if is_multi_node {
             let raft_for_ready = self.raft.clone();
@@ -637,18 +777,63 @@ impl RusdServer {
                         break;
                     }
                 }
-                // etcd e2e test framework blocks until this exact line appears on stdout.
-                // Must use println! (stdout), NOT info!/tracing (stderr).
                 println!("ready to serve client requests");
             });
         } else {
-            // Single-node: print ready immediately
-            // etcd e2e test framework blocks until this exact line appears on stdout.
             println!("ready to serve client requests");
         }
 
-        // Run server until shutdown signal or error
-        server.await?;
+        // Run server — CRL path uses custom TLS acceptor with serve_with_incoming_shutdown
+        if use_crl {
+            let tls_acceptor = build_crl_tls_acceptor(
+                self.config.tls_cert_file.as_deref().unwrap(),
+                self.config.tls_key_file.as_deref().unwrap(),
+                self.config.tls_trusted_ca_file.as_deref().unwrap(),
+                self.config.client_crl_file.as_deref().unwrap(),
+            )?;
+            info!("Client gRPC server TLS enabled with CRL enforcement");
+
+            // Create a channel-based incoming stream:
+            // - A background task accepts TCP connections and performs TLS handshake
+            // - Successfully handshaked connections are sent to tonic via the channel
+            // - Revoked client certs fail the TLS handshake (never reach tonic)
+            let (tx, rx) = tokio::sync::mpsc::channel::<Result<CrlTlsStream, std::io::Error>>(128);
+            let tcp_listener = tokio::net::TcpListener::bind(addr).await?;
+
+            tokio::spawn(async move {
+                loop {
+                    match tcp_listener.accept().await {
+                        Ok((tcp, peer_addr)) => {
+                            let acceptor = tls_acceptor.clone();
+                            let tx = tx.clone();
+                            tokio::spawn(async move {
+                                match acceptor.accept(tcp).await {
+                                    Ok(tls) => {
+                                        let _ = tx.send(Ok(CrlTlsStream { inner: tls })).await;
+                                    }
+                                    Err(e) => {
+                                        // TLS handshake failed — expected for revoked certs
+                                        debug!(
+                                            peer = %peer_addr,
+                                            error = %e,
+                                            "TLS handshake rejected (CRL check or invalid cert)"
+                                        );
+                                    }
+                                }
+                            });
+                        }
+                        Err(e) => {
+                            error!("TCP accept error: {}", e);
+                        }
+                    }
+                }
+            });
+
+            let incoming = tokio_stream::wrappers::ReceiverStream::new(rx);
+            router.serve_with_incoming_shutdown(incoming, shutdown).await?;
+        } else {
+            router.serve_with_shutdown(addr, shutdown).await?;
+        }
 
         info!("rusd server shutting down");
         Ok(())
@@ -690,15 +875,50 @@ impl RusdServer {
     }
 }
 
-/// Compute a deterministic member ID from name and cluster token.
-/// Must match the ID computation in RusdServer::new().
-fn compute_member_id(name: &str, cluster_token: &str) -> u64 {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    name.hash(&mut hasher);
-    cluster_token.hash(&mut hasher);
-    hasher.finish()
+/// Compute a deterministic member ID from peer URLs and cluster token.
+/// Matches etcd v3.5.x's algorithm exactly:
+///   SHA-1(sorted_peer_urls_concatenated + cluster_token)
+///   → first 8 bytes as big-endian u64
+fn compute_member_id(peer_urls: &[String], cluster_token: &str) -> u64 {
+    use sha1::{Digest, Sha1};
+    let mut sorted_urls = peer_urls.to_vec();
+    sorted_urls.sort();
+    let mut data = Vec::new();
+    for url in &sorted_urls {
+        data.extend_from_slice(url.as_bytes());
+    }
+    data.extend_from_slice(cluster_token.as_bytes());
+    let hash = Sha1::digest(&data);
+    u64::from_be_bytes(hash[..8].try_into().unwrap())
+}
+
+/// Compute a deterministic cluster ID from all member IDs.
+/// Matches etcd v3.5.x's algorithm exactly:
+///   SHA-1(sorted_member_ids as 8-byte big-endian each)
+///   → first 8 bytes as big-endian u64
+fn compute_cluster_id(member_ids: &[u64]) -> u64 {
+    use sha1::{Digest, Sha1};
+    let mut sorted = member_ids.to_vec();
+    sorted.sort();
+    let mut data = Vec::with_capacity(sorted.len() * 8);
+    for id in &sorted {
+        data.extend_from_slice(&id.to_be_bytes());
+    }
+    let hash = Sha1::digest(&data);
+    u64::from_be_bytes(hash[..8].try_into().unwrap())
+}
+
+/// Extract peer URLs for a specific member from the initial cluster string.
+/// Returns the peer URLs for the named member.
+fn extract_member_peer_urls(initial_cluster: &str, member_name: &str) -> Vec<String> {
+    for member_str in initial_cluster.split(',') {
+        let member_str = member_str.trim();
+        let parts: Vec<&str> = member_str.split('=').collect();
+        if parts.len() == 2 && parts[0].trim() == member_name {
+            return vec![parts[1].trim().to_string()];
+        }
+    }
+    Vec::new()
 }
 
 /// Parse initial cluster string into PeerConfig entries (excluding self).
@@ -731,19 +951,21 @@ fn parse_peer_configs_with_token(
             continue;
         }
 
+        let peer_urls = vec![peer_url.to_string()];
         peers.push(PeerConfig {
-            id: compute_member_id(name, cluster_token),
+            id: compute_member_id(&peer_urls, cluster_token),
             address: peer_url.to_string(),
         });
     }
     peers
 }
 
-/// Register initial cluster members in the ClusterManager.
+/// Register initial cluster members in the ClusterManager with deterministic IDs.
+/// Uses the same SHA-1 algorithm as etcd v3.5.x to compute member IDs.
 fn register_initial_members(
     cluster_mgr: &ClusterManager,
     initial_cluster: &str,
-    _local_name: &str,
+    cluster_token: &str,
 ) -> anyhow::Result<()> {
     for member_str in initial_cluster.split(',') {
         let member_str = member_str.trim();
@@ -758,8 +980,15 @@ fn register_initial_members(
 
         let peer_urls = vec![peer_url.to_string()];
         let client_urls = vec![peer_url.replace(":2380", ":2379")];
+        let member_id = compute_member_id(&peer_urls, cluster_token);
 
-        match cluster_mgr.add_member(name.to_string(), peer_urls, client_urls, false) {
+        match cluster_mgr.add_member_with_id(
+            member_id,
+            name.to_string(),
+            peer_urls,
+            client_urls,
+            false,
+        ) {
             Ok(member) => {
                 info!(name = name, id = member.id, "Registered cluster member");
             }
@@ -1042,7 +1271,8 @@ fn build_peer_client_urls(
         }
         let name = parts[0].trim();
         let peer_url = parts[1].trim();
-        let member_id = compute_member_id(name, cluster_token);
+        let peer_urls = vec![peer_url.to_string()];
+        let member_id = compute_member_id(&peer_urls, cluster_token);
 
         if name == local_name {
             // Use local client URL

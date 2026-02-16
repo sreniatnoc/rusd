@@ -4,6 +4,7 @@ use std::time::Duration;
 #[derive(Clone, Debug)]
 pub struct RaftConfig {
     pub id: u64,
+    pub cluster_id: u64,
     pub election_timeout_min: Duration,
     pub election_timeout_max: Duration,
     pub heartbeat_interval: Duration,
@@ -24,6 +25,7 @@ impl Default for RaftConfig {
     fn default() -> Self {
         Self {
             id: 1,
+            cluster_id: 0,
             election_timeout_min: Duration::from_millis(150),
             election_timeout_max: Duration::from_millis(300),
             heartbeat_interval: Duration::from_millis(50),

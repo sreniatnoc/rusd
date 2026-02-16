@@ -42,7 +42,7 @@ rusd is built on four pillars:
 ## Status (v0.2.0)
 
 - **24/24 etcd API compatibility** — KV, Watch, Lease, Auth, Cluster, Maintenance (incl. Snapshot)
-- **24/26 etcd e2e tests pass** (Tier 2 Core KV, 92.3%)
+- **26/26 etcd e2e tests pass** (Tier 2 Core KV, 100%)
 - 34/34 Kubernetes compliance tests pass (Kind v1.35)
 - Multi-node Raft with leader election, log replication, leader forwarding, and snapshot transfer
 - TLS/mTLS and Auto-TLS certificate generation

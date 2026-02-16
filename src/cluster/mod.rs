@@ -164,7 +164,7 @@ impl ClusterManager {
         }
     }
 
-    /// Adds a new member to the cluster.
+    /// Adds a new member to the cluster with an auto-generated ID.
     /// If is_learner is true, the member will not participate in voting.
     pub fn add_member(
         &self,
@@ -173,9 +173,20 @@ impl ClusterManager {
         client_urls: Vec<String>,
         is_learner: bool,
     ) -> ClusterResult<Member> {
-        // Generate a new member ID
         let member_id = self.generate_member_id();
+        self.add_member_with_id(member_id, name, peer_urls, client_urls, is_learner)
+    }
 
+    /// Adds a new member with a pre-computed deterministic ID.
+    /// Used during initial cluster bootstrap to match etcd's ID algorithm.
+    pub fn add_member_with_id(
+        &self,
+        member_id: u64,
+        name: String,
+        peer_urls: Vec<String>,
+        client_urls: Vec<String>,
+        is_learner: bool,
+    ) -> ClusterResult<Member> {
         let mut member = Member::new(member_id, name, peer_urls, client_urls);
         member.is_learner = is_learner;
 

@@ -92,4 +92,4 @@ In multi-node clusters, followers transparently forward write operations (Put, D
 
 See [etcd E2E Tests](etcd-e2e-tests) for detailed results from running etcd v3.5.17's own test suite against rusd.
 
-Current: **24/26 Tier 2 tests pass (92.3%)**.
+Current: **26/26 Tier 2 tests pass (100%)**.

@@ -361,7 +361,7 @@ generate_report() {
     cat > "$report_file" <<EOF
 {
   "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-  "rusd_version": "$("$RUSD_BINARY" --version 2>&1 | head -1)",
+  "rusd_version": "$("$BIN_DIR/etcd" --version 2>&1 | head -1)",
   "etcd_branch": "$ETCD_BRANCH",
   "max_tier": $MAX_TIER,
   "total_passed": $TOTAL_PASS,

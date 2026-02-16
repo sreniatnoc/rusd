@@ -257,7 +257,8 @@ proto/
 - Chaos tested: leader kill + recovery, data integrity under node churn (11/11 pass)
 - Auto-TLS: self-signed certificate generation at startup (rcgen)
 - Leader forwarding: followers proxy writes to leader in multi-node clusters
-- etcd e2e test compatibility: **24/26 Tier 2 tests pass** (92.3%) using etcd v3.5.17's own test suite
+- etcd e2e test compatibility: **26/26 Tier 2 tests pass** (100%) using etcd v3.5.17's own test suite
+- CRL enforcement: DER/PEM certificate revocation list support via rustls
 - CI: 9 jobs all green (unit, integration, multi-node, K8s, TLS, benchmarks, lint, e2e compat)
 - **24/24 etcd API compatibility**
 
@@ -265,7 +266,6 @@ proto/
 - Jepsen-style linearizability testing
 - Multi-node Kubernetes (3-node rusd backing Kind cluster)
 - Snapshot compaction and automatic log truncation
-- CRL enforcement in TLS (custom rustls ServerConfig)
 
 ## License
 
