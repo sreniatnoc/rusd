@@ -30,13 +30,11 @@ fn generate_self_signed_cert(name: &str) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
         "0.0.0.0".to_string(),
     ];
 
-    let cert = rcgen::generate_simple_self_signed(san_names)
+    let certified_key = rcgen::generate_simple_self_signed(san_names)
         .map_err(|e| anyhow::anyhow!("Failed to generate self-signed cert: {}", e))?;
 
-    let cert_pem = cert
-        .serialize_pem()
-        .map_err(|e| anyhow::anyhow!("Failed to serialize cert PEM: {}", e))?;
-    let key_pem = cert.serialize_private_key_pem();
+    let cert_pem = certified_key.cert.pem();
+    let key_pem = certified_key.signing_key.serialize_pem();
 
     Ok((cert_pem.into_bytes(), key_pem.into_bytes()))
 }
