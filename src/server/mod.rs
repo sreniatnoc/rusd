@@ -72,10 +72,7 @@ impl AsyncWrite for CrlTlsStream {
         Pin::new(&mut self.inner).poll_flush(cx)
     }
 
-    fn poll_shutdown(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<std::io::Result<()>> {
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         Pin::new(&mut self.inner).poll_shutdown(cx)
     }
 }
@@ -141,7 +138,9 @@ fn build_crl_tls_acceptor(
             .unwrap_or_default();
     if crls.is_empty() {
         // Not PEM — treat the whole file as a single DER-encoded CRL
-        crls.push(rustls::pki_types::CertificateRevocationListDer::from(crl_bytes));
+        crls.push(rustls::pki_types::CertificateRevocationListDer::from(
+            crl_bytes,
+        ));
     }
 
     info!(
@@ -389,8 +388,7 @@ impl RusdServer {
         // Generate deterministic member and cluster IDs matching etcd v3.5.x's algorithm.
         // member_id = SHA-1(sorted_peer_urls + cluster_token) → first 8 bytes big-endian u64
         // cluster_id = SHA-1(sorted_member_ids) → first 8 bytes big-endian u64
-        let local_peer_urls =
-            extract_member_peer_urls(&config.initial_cluster, &config.name);
+        let local_peer_urls = extract_member_peer_urls(&config.initial_cluster, &config.name);
         let member_id = compute_member_id(&local_peer_urls, &config.initial_cluster_token);
 
         // Compute all member IDs for the initial cluster to derive cluster_id
@@ -542,7 +540,11 @@ impl RusdServer {
         // 4. Initialize Cluster manager
         let cluster_mgr = ClusterManager::new(cluster_id, member_id)
             .map_err(|e| anyhow::anyhow!("Failed to initialize cluster manager: {}", e))?;
-        register_initial_members(&cluster_mgr, &config.initial_cluster, &config.initial_cluster_token)?;
+        register_initial_members(
+            &cluster_mgr,
+            &config.initial_cluster,
+            &config.initial_cluster_token,
+        )?;
         info!(
             initial_cluster = %config.initial_cluster,
             "Cluster configuration parsed"
@@ -830,7 +832,9 @@ impl RusdServer {
             });
 
             let incoming = tokio_stream::wrappers::ReceiverStream::new(rx);
-            router.serve_with_incoming_shutdown(incoming, shutdown).await?;
+            router
+                .serve_with_incoming_shutdown(incoming, shutdown)
+                .await?;
         } else {
             router.serve_with_shutdown(addr, shutdown).await?;
         }
