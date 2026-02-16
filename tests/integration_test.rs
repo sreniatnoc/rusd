@@ -439,11 +439,7 @@ async fn test_snapshot_restore() {
         .into_inner();
 
     let mut snapshot_data = Vec::new();
-    while let Some(resp) = stream
-        .message()
-        .await
-        .expect("snapshot stream error")
-    {
+    while let Some(resp) = stream.message().await.expect("snapshot stream error") {
         snapshot_data.extend_from_slice(&resp.blob);
         if resp.remaining_bytes == 0 {
             break;

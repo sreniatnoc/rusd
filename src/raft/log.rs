@@ -269,12 +269,7 @@ impl RaftLog {
     }
 
     /// Saves a snapshot with both metadata and data.
-    pub fn save_snapshot_with_data(
-        &self,
-        index: u64,
-        term: u64,
-        data: Vec<u8>,
-    ) -> RaftResult<()> {
+    pub fn save_snapshot_with_data(&self, index: u64, term: u64, data: Vec<u8>) -> RaftResult<()> {
         self.save_snapshot(index, term)?;
         *self.snapshot_data.lock() = Some(data);
         Ok(())
